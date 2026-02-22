@@ -15,8 +15,8 @@ Spatial (cross-venue) arbitrage is out of V1 scope and can be considered in a la
 # Venues
 
 ## Target exchanges (V1)
-- **Binance**
-- **Bybit**
+- **Nobitex**
+- **KCEX**
 
 ## Instrument coverage
 - **Spot**: enabled on both venues for base inventory and triangular paths.
@@ -41,8 +41,8 @@ The following hard limits apply globally unless overridden by stricter venue-spe
 - SOL: **<= 800 SOL**
 
 ## Max notional per venue (gross)
-- Binance: **<= 250,000 USDT**
-- Bybit: **<= 200,000 USDT**
+- Nobitex: **<= 250,000 USDT**
+- KCEX: **<= 200,000 USDT**
 
 ## Daily loss cap
 - Portfolio-level realized + unrealized PnL stop: **-12,500 USDT/day**
