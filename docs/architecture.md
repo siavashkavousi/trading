@@ -34,8 +34,9 @@
 11. [Security Architecture](#11-security-architecture)
 12. [Technology Stack](#12-technology-stack)
 13. [Data Model](#13-data-model)
-14. [Failure Modes & Recovery](#14-failure-modes--recovery)
-15. [Future Considerations (Post-V1)](#15-future-considerations-post-v1)
+14. [Dry Run / Paper Trading Mode](#14-dry-run--paper-trading-mode)
+15. [Failure Modes & Recovery](#15-failure-modes--recovery)
+16. [Future Considerations (Post-V1)](#16-future-considerations-post-v1)
 
 ---
 
@@ -244,6 +245,7 @@ USDT → BTC (buy BTC/USDT) → ETH (sell BTC/ETH or equivalent) → USDT (sell 
 **Execution modes**:
 - **Aggressive (taker)**: Market or limit-at-best orders for time-sensitive triangular arb.
 - **Passive (maker)**: Limit orders posted inside the spread for basis arb entry, where latency is less critical.
+- **Dry run (paper)**: Orders are simulated locally instead of being sent to the venue. See [Section 14](#14-dry-run--paper-trading-mode) for full details.
 
 ---
 
@@ -1002,7 +1004,141 @@ CREATE TABLE config_audit (
 
 ---
 
-## 14. Failure Modes & Recovery
+## 14. Dry Run / Paper Trading Mode
+
+The system supports a **dry run (paper trading) mode** that simulates the full trading pipeline — from signal detection through execution — without placing real orders on any venue. This mode is essential for strategy validation, system integration testing, cost model calibration, and operator training before committing real capital.
+
+### 14.1 Overview
+
+When dry run mode is enabled, the system behaves identically to live trading with one critical difference: the Execution Engine routes orders to a **Simulated Venue Gateway** instead of the real venue adapters. All other components — Market Data Service, Strategy Engine, Risk Manager, Cost Model, Position Manager, Monitoring — operate normally against **live market data**.
+
+```
+                          ┌──────────────────────────┐
+                          │   Mode: DRY_RUN          │
+                          │                          │
+  Live Market Data ──────►│  Market Data Service     │
+                          │        │                 │
+                          │  Strategy Engine         │
+                          │        │                 │
+                          │  Risk Manager            │
+                          │        │                 │
+                          │  Execution Engine        │
+                          │        │                 │
+                          │  ┌─────▼───────────────┐ │
+                          │  │ Simulated Venue GW   │ │  ← No real orders
+                          │  │ (Fill Simulator)     │ │
+                          │  └─────────────────────┘ │
+                          │        │                 │
+                          │  Position Manager        │  ← Tracks simulated positions
+                          │  Monitoring / Logs       │  ← Full observability
+                          └──────────────────────────┘
+```
+
+### 14.2 Operating Modes
+
+The system supports three operating modes, controlled by a single configuration parameter:
+
+| Mode | Config value | Market data | Signal detection | Risk checks | Order execution | PnL tracking |
+|---|---|---|---|---|---|---|
+| **Live** | `live` | Real (venue WS) | Active | Enforced | Real orders to venue | Real |
+| **Dry run** | `dry_run` | Real (venue WS) | Active | Enforced | Simulated locally | Simulated |
+| **Backtest** | `backtest` | Historical replay | Active | Enforced | Simulated locally | Simulated |
+
+The `dry_run` mode is the focus of this section. Backtest mode shares the same simulation engine but replays historical data instead of consuming live feeds; it is a post-V1 enhancement but the architecture accommodates it.
+
+### 14.3 Simulated Venue Gateway
+
+The Simulated Venue Gateway implements the same `VenueGateway` interface as the real adapters (see [Section 5.8](#58-venue-gateway-layer)), making it a drop-in replacement with no changes to upstream components.
+
+**Fill simulation logic**:
+
+| Behavior | Detail |
+|---|---|
+| **Market orders** | Filled immediately at the current best bid/ask from the live order book, applying the configured slippage model. |
+| **Limit orders** | Filled when the live market price crosses the limit price. Partial fills are simulated based on order book depth at the crossed level. |
+| **Latency simulation** | A configurable artificial delay (default: 50 ms) is injected between order submission and acknowledgement to mimic real venue round-trip latency. |
+| **Fee application** | Simulated fills apply the same fee schedule as the real venue (maker/taker rates from the Cost Model Service). |
+| **Reject simulation** | Optionally injects order rejects at a configurable rate (default: 0%) to test error handling paths. |
+| **Funding rate** | For perp positions held in dry run, funding payments are calculated from the live funding rate stream and applied to simulated PnL. |
+
+**Fill model configuration**:
+
+```
+interface FillSimulator {
+    simulate_fill(order: OrderRequest, book: OrderBookSnapshot) → SimulatedFill {
+        fill_price: Decimal,     // best bid/ask ± slippage
+        fill_size: Decimal,      // min(order_size, available_liquidity)
+        fee: Decimal,            // from cost model
+        latency_ms: int,         // simulated venue RTT
+        status: FILLED | PARTIAL | REJECTED
+    }
+}
+```
+
+### 14.4 Simulated Position & PnL Tracking
+
+In dry run mode, the Position & Portfolio Manager tracks simulated positions in a **separate namespace** from any real positions:
+
+- Simulated balances start from a configurable **initial capital** (default: 100,000 USDT).
+- Positions are updated on every simulated fill event, using the same logic as live mode.
+- PnL is computed identically to live mode (mark-to-market against live prices).
+- Daily PnL loss cap and all risk limits are enforced against the simulated portfolio, so the system behaves exactly as it would in production.
+
+### 14.5 Observability in Dry Run
+
+All metrics, traces, and logs emitted during dry run are tagged with `mode: dry_run` to distinguish them from live trading data:
+
+- Metrics carry a `mode` label: `realized_edge_bps{mode="dry_run", strategy="tri_arb", ...}`.
+- Logs include a `"mode": "dry_run"` field in every structured log entry.
+- A dedicated **Grafana dashboard** (or dashboard tab) displays dry run performance side-by-side with live performance once live trading begins.
+
+**Key dry run metrics**:
+
+| Metric | Purpose |
+|---|---|
+| `dry_run_signals_total` | Total signals generated during paper trading |
+| `dry_run_simulated_fills_total` | Total simulated fills |
+| `dry_run_pnl_usdt` | Cumulative simulated PnL |
+| `dry_run_edge_realized_bps` | Realized edge on simulated trades (validates strategy profitability) |
+| `dry_run_slippage_model_error_bps` | Difference between modeled slippage and what live book depth would have produced |
+| `dry_run_signal_to_stale_pct` | Percentage of signals that became stale before simulated fill (latency proxy) |
+
+### 14.6 Dry Run Safeguards
+
+| Safeguard | Detail |
+|---|---|
+| **Mode is explicit and persistent** | The operating mode is set in the configuration file and logged at startup. There is no implicit fallback to live mode. |
+| **Startup confirmation** | On startup in `live` mode, the system logs a prominent `LIVE TRADING ACTIVE` warning and optionally requires a CLI confirmation flag (`--confirm-live`). |
+| **No real API key requirement** | Dry run mode does not require valid trading API keys. Market data API keys are still needed for live feed access. |
+| **Isolated persistence** | Dry run trades are written to a separate database table (`dry_run_trades`) or tagged with a `mode` column, preventing confusion with real trade history. |
+| **No venue-side effects** | The Simulated Venue Gateway never opens network connections to venue trading endpoints; only market data connections are used. |
+
+### 14.7 Transition from Dry Run to Live
+
+The recommended promotion workflow:
+
+```
+1. Deploy in dry_run mode with full production configuration
+2. Run for ≥ 72 hours (covering multiple funding intervals and market regimes)
+3. Review dry run performance report:
+   - Is realized edge within ±30% of expected edge?
+   - Is simulated slippage within ±50% of model predictions?
+   - Are risk limits never breached unexpectedly?
+   - Are all monitoring alerts firing correctly?
+   - Is latency within SLA targets?
+4. If satisfactory:
+   a. Reduce risk limits to 25% of production values
+   b. Switch mode to live (set trading_mode: live + --confirm-live flag)
+   c. Monitor first 4 hours intensively
+   d. Gradually increase risk limits to production values over 48 hours
+5. If unsatisfactory:
+   - Tune strategy parameters, cost model, or slippage curves
+   - Repeat from step 2
+```
+
+---
+
+## 15. Failure Modes & Recovery
 
 | Failure Mode | Detection | Automated Response | Manual Follow-up |
 |---|---|---|---|
@@ -1016,7 +1152,7 @@ CREATE TABLE config_audit (
 | **Database write failure** | Write thread error count | Buffer writes in memory; retry; alert if buffer nears capacity | Fix DB connectivity; replay buffered writes |
 | **Configuration error** | Schema validation | Reject invalid config; continue with last valid config | Fix configuration; verify schema |
 
-### 14.1 Startup & Recovery Sequence
+### 15.1 Startup & Recovery Sequence
 
 ```
 1. Load configuration (validate schema)
@@ -1036,7 +1172,7 @@ CREATE TABLE config_audit (
 
 ---
 
-## 15. Future Considerations (Post-V1)
+## 16. Future Considerations (Post-V1)
 
 The architecture is designed with the following future expansions in mind, though none are in V1 scope:
 
@@ -1077,6 +1213,8 @@ The architecture is designed with the following future expansions in mind, thoug
 
 system:
   instance_id: "prod-01"
+  trading_mode: "dry_run"  # "live", "dry_run", or "backtest"
+  require_live_confirmation: true  # require --confirm-live flag for live mode
   log_level: "INFO"
   timezone: "UTC"
 
@@ -1164,6 +1302,13 @@ monitoring:
   logging:
     availability_sla_pct: 99.9
     availability_window_minutes: 1
+
+dry_run:
+  initial_capital_usdt: 100000
+  simulated_latency_ms: 50
+  reject_rate_pct: 0.0
+  use_live_slippage_model: true
+  persist_to_separate_table: true
 
 persistence:
   checkpoint_db: "sqlite:///data/checkpoints.db"
