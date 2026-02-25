@@ -853,7 +853,7 @@ The system is implemented in **Go**, chosen for its compiled performance, lightw
 | **Concurrency** | Goroutines + channels | Native CSP-style concurrency maps naturally to the event-driven pipeline. Channels provide type-safe, bounded message passing between components. |
 | **WebSocket client** | [`gorilla/websocket`](https://github.com/gorilla/websocket) or [`nhooyr.io/websocket`](https://github.com/nhooyr/websocket) | Mature, production-grade WebSocket implementations. `nhooyr.io/websocket` offers `context.Context` integration and is preferred for new code. |
 | **HTTP client** | `net/http` (stdlib) | Go's standard HTTP client supports connection pooling, keep-alive, timeouts, and TLS out of the box. No external dependency needed. |
-| **Decimal arithmetic** | [`shopspring/decimal`](https://github.com/shopspring/decimal) | Arbitrary-precision decimal math for accurate price, size, and PnL calculations. Avoids floating-point rounding errors critical in financial systems. |
+| **Decimal arithmetic** | [`shopspring/decimal`](https://github.com/shopspring/decimal) | Go has no native decimal type. This is the most widely adopted arbitrary-precision decimal library in the Go ecosystem. Wraps `math/big` internally for exact arithmetic. See [Section 12.3](#123-numeric-precision-strategy) for the performance trade-off and `int64` fixed-point optimization on the hot path. |
 | **UUID generation** | [`google/uuid`](https://github.com/google/uuid) | UUIDv7 (time-ordered) for internal order IDs, enabling chronological sorting without extra indexing. |
 | **Configuration** | [`spf13/viper`](https://github.com/spf13/viper) + YAML files | File-based config with environment variable override, hot-reload via `fsnotify` watcher, and struct tag-based binding. |
 | **Configuration validation** | [`go-playground/validator`](https://github.com/go-playground/validator) | Struct tag-based validation for configuration structs at load time (e.g., `validate:"required,gt=0"`). |
@@ -901,6 +901,44 @@ require (
 )
 ```
 
+### 12.3 Numeric Precision Strategy
+
+Go lacks a native decimal type. All financial arithmetic uses `shopspring/decimal.Decimal`, which provides exact decimal representation via `math/big` internally. However, `decimal.Decimal` has a performance cost (heap allocations, arbitrary-precision math) that must be managed on the hot path.
+
+**Two-tier approach:**
+
+| Tier | Type | Where used | Rationale |
+|---|---|---|---|
+| **Canonical (storage & APIs)** | `decimal.Decimal` | Order prices/sizes, position tracking, PnL, risk state, cost estimates, persistence, venue API serialization | Correctness is non-negotiable. These values flow through risk checks, accumulate across trades, and are persisted. Rounding errors here produce wrong trade decisions or incorrect PnL reporting. |
+| **Hot-path inner loop** | `int64` fixed-point | Signal detection comparisons inside the Strategy Engine (e.g., "is implied cross rate > direct rate + 18 bps?") | The inner loop of triangular arb detection runs on every order book tick. Converting to `int64` micro-units avoids heap allocation per comparison. |
+
+**Fixed-point convention:**
+
+```go
+const PricePrecision = 1_000_000_000 // 9 decimal places (nano-units)
+
+type FixedPrice int64
+
+func ToFixed(d decimal.Decimal) FixedPrice {
+    return FixedPrice(d.Mul(decimal.NewFromInt(PricePrecision)).IntPart())
+}
+
+func (f FixedPrice) ToDecimal() decimal.Decimal {
+    return decimal.New(int64(f), -9)
+}
+```
+
+- Order book price levels are stored as both `decimal.Decimal` (for order submission) and `FixedPrice` (for signal math) when the book is updated. The conversion happens once per update, not once per comparison.
+- The threshold comparisons in the strategy engine use `FixedPrice` arithmetic (plain `int64` add/subtract/compare — no allocations).
+- Once a signal is detected and passes the threshold, all downstream processing (cost model, risk check, order construction) uses `decimal.Decimal` exclusively.
+
+**Why not `float64` anywhere?**
+
+- `float64` cannot exactly represent `0.1`, `0.01`, or most decimal fractions. In a three-leg triangular arb, this means `leg1 * leg2 * leg3` produces a different result than the mathematically correct value, and the error is unpredictable.
+- `int64` fixed-point has none of these problems: it is exact within its precision range, uses no heap, and is faster than `float64` for integer comparisons.
+- `decimal.Decimal` is exact at any precision, at the cost of heap allocation per operation.
+- The system never uses `float64` for any price, size, fee, or PnL value.
+
 ---
 
 ## 13. Project Layout
@@ -923,7 +961,8 @@ trading/
 │   │   ├── position.go             # Position, Balance
 │   │   ├── signal.go               # TradeSignal, StrategyType
 │   │   ├── book.go                 # OrderBookSnapshot, PriceLevel
-│   │   └── risk.go                 # RiskState, RiskMode
+│   │   ├── risk.go                 # RiskState, RiskMode
+│   │   └── fixedpoint.go           # FixedPrice int64 type + decimal conversion
 │   │
 │   ├── marketdata/
 │   │   ├── service.go              # Market Data Service: book maintenance, staleness
