@@ -33,10 +33,11 @@
 10. [Deployment Architecture](#10-deployment-architecture)
 11. [Security Architecture](#11-security-architecture)
 12. [Technology Stack](#12-technology-stack)
-13. [Data Model](#13-data-model)
-14. [Dry Run / Paper Trading Mode](#14-dry-run--paper-trading-mode)
-15. [Failure Modes & Recovery](#15-failure-modes--recovery)
-16. [Future Considerations (Post-V1)](#16-future-considerations-post-v1)
+13. [Project Layout](#13-project-layout)
+14. [Data Model](#14-data-model)
+15. [Dry Run / Paper Trading Mode](#15-dry-run--paper-trading-mode)
+16. [Failure Modes & Recovery](#16-failure-modes--recovery)
+17. [Future Considerations (Post-V1)](#17-future-considerations-post-v1)
 
 ---
 
@@ -85,7 +86,7 @@ Market Data → Signal Detection → Risk Check → Order Generation → Executi
 |---|---|
 | **Risk gates are non-bypassable** | All order flow passes through the Risk Manager synchronously. No shortcut paths exist, even under degraded conditions. |
 | **Fail-safe over fail-open** | On ambiguity (stale data, unclear position state, risk limit uncertainty), the system halts new order placement and flattens exposure. |
-| **Hot-path isolation** | The critical path (market data → decision → order) is kept free of disk I/O, garbage collection pauses, and shared locks. Logging, persistence, and analytics are handled asynchronously on separate threads/processes. |
+| **Hot-path isolation** | The critical path (market data → decision → order) is kept free of disk I/O and shared locks. Go's sub-millisecond GC pauses are acceptable, but allocation pressure on the hot path is minimized through object pooling and pre-allocated buffers. Logging, persistence, and analytics are handled asynchronously on separate goroutines. |
 | **Venue abstraction** | All venue-specific protocol details are encapsulated behind a unified gateway interface, enabling exchange addition without modifying strategy or risk logic. |
 | **Idempotent operations** | Order submissions, cancellations, and state transitions are idempotent to handle retries safely in the presence of network instability. |
 | **Observable by default** | Every component emits structured metrics, traces, and logs. Silent failures are treated as architecture bugs. |
@@ -162,8 +163,8 @@ Market Data → Signal Detection → Risk Check → Order Generation → Executi
 - Freshness SLA: data older than **500 ms** is flagged stale; data older than **2 seconds** triggers execution blocking.
 
 **Internal data structures**:
-- Price-level sorted arrays (bid descending, ask ascending) for O(1) best-bid/ask access.
-- Circular buffer for recent trade ticks (last 1000 per symbol).
+- Price-level sorted slices (bid descending, ask ascending) for O(1) best-bid/ask access, backed by pre-allocated arrays to avoid GC pressure.
+- Lock-free ring buffer (implemented via `sync/atomic`) for recent trade ticks (last 1000 per symbol).
 
 ---
 
@@ -245,7 +246,7 @@ USDT → BTC (buy BTC/USDT) → ETH (sell BTC/ETH or equivalent) → USDT (sell 
 **Execution modes**:
 - **Aggressive (taker)**: Market or limit-at-best orders for time-sensitive triangular arb.
 - **Passive (maker)**: Limit orders posted inside the spread for basis arb entry, where latency is less critical.
-- **Dry run (paper)**: Orders are simulated locally instead of being sent to the venue. See [Section 14](#14-dry-run--paper-trading-mode) for full details.
+- **Dry run (paper)**: Orders are simulated locally instead of being sent to the venue. See [Section 15](#15-dry-run--paper-trading-mode) for full details.
 
 ---
 
@@ -296,13 +297,17 @@ USDT → BTC (buy BTC/USDT) → ETH (sell BTC/ETH or equivalent) → USDT (sell 
 - For new symbols or insufficient data, a conservative default curve is used.
 
 **Interface**:
-```
-estimate_cost(venue, symbol, side, size, order_type) → CostEstimate {
-    fee_bps: float,
-    slippage_bps: float,
-    funding_bps: float | null,
-    total_bps: float,
-    confidence: float
+```go
+type CostEstimate struct {
+    FeeBps      float64
+    SlippageBps float64
+    FundingBps  *float64 // nil when not applicable
+    TotalBps    float64
+    Confidence  float64
+}
+
+type CostModelService interface {
+    EstimateCost(venue, symbol string, side Side, size decimal.Decimal, orderType OrderType) (CostEstimate, error)
 }
 ```
 
@@ -364,22 +369,26 @@ PENDING_NEW → SUBMITTED → ACKNOWLEDGED → PARTIAL_FILL → FILLED
 
 **Unified gateway interface**:
 
-```
-interface VenueGateway {
-    // Market data
-    subscribe_orderbook(symbol) → Stream<OrderBookDelta>
-    subscribe_trades(symbol) → Stream<Trade>
-    subscribe_funding(symbol) → Stream<FundingRate>
+```go
+type VenueGateway interface {
+    // Market data — return channels for streaming data
+    SubscribeOrderBook(ctx context.Context, symbol string) (<-chan OrderBookDelta, error)
+    SubscribeTrades(ctx context.Context, symbol string) (<-chan Trade, error)
+    SubscribeFunding(ctx context.Context, symbol string) (<-chan FundingRate, error)
 
     // Trading
-    place_order(OrderRequest) → OrderAck | OrderReject
-    cancel_order(order_id) → CancelAck | CancelReject
-    get_open_orders(symbol?) → List<Order>
+    PlaceOrder(ctx context.Context, req OrderRequest) (*OrderAck, error)
+    CancelOrder(ctx context.Context, orderID string) (*CancelAck, error)
+    GetOpenOrders(ctx context.Context, symbol string) ([]Order, error)
 
     // Account
-    get_balances() → Map<Asset, Balance>
-    get_positions() → List<Position>
-    get_fee_tier() → FeeTier
+    GetBalances(ctx context.Context) (map[string]Balance, error)
+    GetPositions(ctx context.Context) ([]Position, error)
+    GetFeeTier(ctx context.Context) (*FeeTier, error)
+
+    // Lifecycle
+    Connect(ctx context.Context) error
+    Close() error
 }
 ```
 
@@ -476,10 +485,10 @@ interface VenueGateway {
 | System tuning | Thread pool sizes, buffer capacities, timeouts | Restart required |
 
 **Design**:
-- Configuration stored in versioned files (YAML/TOML) with schema validation.
-- A file watcher detects changes and applies hot-reloadable parameters without restart.
-- All configuration changes are logged with before/after values for audit.
-- Sensitive values (API keys, secrets) stored separately in environment variables or a secrets manager, never in config files.
+- Configuration stored in versioned YAML files, loaded via `spf13/viper` with struct tag binding and validated at load time using `go-playground/validator`.
+- Viper's `fsnotify`-based file watcher detects changes and applies hot-reloadable parameters without restart. Updated config is atomically swapped via `atomic.Pointer[Config]` to avoid locking the hot path during reads.
+- All configuration changes are logged with before/after values (via `slog`) for audit.
+- Sensitive values (API keys, secrets) stored in environment variables and injected via Viper's `AutomaticEnv()` binding, never in YAML files. For production, integration with HashiCorp Vault is supported.
 
 ---
 
@@ -491,15 +500,16 @@ interface VenueGateway {
 
 | Tier | Technology | Data | Retention |
 |---|---|---|---|
-| Hot (in-memory) | In-process data structures | Active orders, positions, order books | Session lifetime |
-| Warm (local) | Embedded DB (SQLite/RocksDB) | Risk checkpoints, recent trades, order log | 30 days |
-| Cold (remote) | PostgreSQL or TimescaleDB | Full trade history, PnL records, config audit log | Indefinite |
-| Time-series | InfluxDB or Prometheus | Metrics | 90 days (full res), 2 years (downsampled) |
+| Hot (in-memory) | Go structs + `sync.Map` / guarded maps | Active orders, positions, order books | Session lifetime |
+| Warm (local) | SQLite via `modernc.org/sqlite` (pure Go) | Risk checkpoints, recent trades, order log | 30 days |
+| Cold (remote) | PostgreSQL 16+ via `jackc/pgx` | Full trade history, PnL records, config audit log | Indefinite |
+| Time-series | Prometheus (scraped via `/metrics` endpoint) | Metrics | 90 days (full res), 2 years (downsampled) |
 
 **Write path** (hot path isolation):
 - The critical trading path never blocks on persistence writes.
-- Writes to warm/cold storage happen asynchronously via a dedicated writer thread consuming from a bounded queue.
-- If the write queue fills (backpressure), non-critical writes are dropped with a metric increment; risk checkpoints are never dropped.
+- Writes to warm/cold storage happen asynchronously via a dedicated `persistWriter` goroutine consuming from a buffered channel (`chan WriteRequest`).
+- If the write channel fills (backpressure), non-critical writes are dropped with a metric increment; risk checkpoints use a separate, never-dropped channel.
+- PostgreSQL writes use `pgx` batch mode to amortize round-trip cost when multiple writes are queued.
 
 ---
 
@@ -599,12 +609,13 @@ Each venue adapter maintains:
 
 Each venue adapter implements a **token bucket rate limiter**:
 
-```
-RateLimiter {
-    buckets: Map<EndpointCategory, TokenBucket>
-
-    acquire(category, weight) → bool | wait_ms
+```go
+type RateLimiter struct {
+    buckets map[EndpointCategory]*TokenBucket
 }
+
+func (r *RateLimiter) Acquire(ctx context.Context, category EndpointCategory, weight int) error
+func (r *RateLimiter) TryAcquire(category EndpointCategory, weight int) bool
 ```
 
 - Categories: `public_data`, `private_data`, `order_place`, `order_cancel`, `account`.
@@ -685,30 +696,42 @@ Meeting the 180 ms e2e latency target (p95) requires deliberate architectural ch
 
 | Technique | Component | Impact |
 |---|---|---|
-| **Lock-free ring buffer** | Event bus | Eliminates mutex contention on the critical path |
-| **Object pooling** | Market Data, Strategy Engine | Reduces GC pressure from high-frequency allocations |
+| **Lock-free ring buffer** | Event bus | Uses `sync/atomic` operations; eliminates mutex contention on the critical path |
+| **`sync.Pool` object pooling** | Market Data, Strategy Engine | Reuses allocated structs for order book updates and signals, reducing GC pressure |
 | **Pre-computed lookup tables** | Strategy Engine | Eliminates repeated triangular path enumeration |
-| **Connection keep-alive** | Venue Gateway | Avoids TLS/TCP handshake latency per order |
-| **Batch-free processing** | All hot-path components | Each event processed immediately, no micro-batching |
-| **Kernel bypass (optional)** | Venue Gateway | Reduces network stack latency for WebSocket frames |
+| **`GOGC` tuning** | Runtime | Set `GOGC=400` or higher to trade memory for fewer GC cycles on the hot path |
+| **`GOMEMLIMIT`** | Runtime | Hard memory ceiling prevents OOM while allowing aggressive `GOGC` tuning |
+| **Connection keep-alive** | Venue Gateway | Persistent `*http.Client` with keep-alive and connection pooling avoids TLS/TCP handshake per order |
+| **Batch-free processing** | All hot-path components | Each event processed immediately via dedicated goroutines, no micro-batching |
+| **Pre-allocated channel buffers** | Event bus, gateway | Buffered channels sized to absorb burst traffic without blocking senders |
 
-### 9.2 Threading Model
+### 9.2 Concurrency Model (Goroutines)
+
+Go's lightweight goroutines and channels replace traditional thread pools. The scheduler multiplexes goroutines onto OS threads automatically, but `GOMAXPROCS` and runtime pinning are used to control hot-path locality.
 
 ```
-Thread/Process        Responsibility                     Pinned?
-─────────────────     ──────────────────────────────     ───────
-MD Receiver (×N)      WebSocket read + parse             Yes
-Event Dispatcher      Route events to consumers          Yes
-Strategy Worker       Signal computation                 Yes
-Risk Checker          Synchronous risk validation        Yes
-Order Submitter       REST API calls to venues           No (pool)
-Writer                Async persistence writes           No
-Metrics Emitter       Periodic metric flush              No
-Reconciler            Periodic position reconciliation   No
+Goroutine                 Responsibility                     Notes
+────────────────────      ──────────────────────────────     ──────────────
+mdReceiver (×N)           WebSocket read + parse             One per venue WS connection;
+                                                             reads into buffered channel
+eventDispatcher           Fan-out events to consumers        Single goroutine; select on
+                                                             input channels, write to
+                                                             subscriber channels
+strategyWorker (×M)       Signal computation                 One per venue; consumes from
+                                                             market data channel
+riskChecker               Synchronous risk validation        Single goroutine; serializes
+                                                             all risk checks to avoid locks
+orderSubmitter (×K)       HTTP POST to venue REST API        Goroutine pool via semaphore;
+                                                             bounded concurrency
+persistWriter             Async DB writes                    Consumes from write channel;
+                                                             batches inserts
+metricsEmitter            Periodic metric flush              Ticker-driven goroutine
+reconciler                Periodic position reconciliation   Ticker-driven goroutine
 ```
 
-- Hot-path threads (MD Receiver, Event Dispatcher, Strategy Worker, Risk Checker) are optionally **CPU-pinned** to avoid context switching.
-- Non-hot-path threads use a shared thread pool.
+- `GOMAXPROCS` is set to match the number of available CPU cores.
+- For extreme latency sensitivity, the `runtime.LockOSThread()` call can pin critical goroutines (e.g., `mdReceiver`, `strategyWorker`) to dedicated OS threads, preventing scheduler preemption.
+- Channel backpressure is monitored: if a channel reaches 80% capacity, a warning metric is emitted; at 100%, the sender drops with a counter increment (non-critical paths only).
 
 ### 9.3 Latency Measurement
 
@@ -716,7 +739,7 @@ Reconciler            Periodic position reconciliation   No
   1. **Market data to decision**: timestamp at MD receive → timestamp at signal emit.
   2. **Decision to order ack**: timestamp at signal emit → timestamp at venue order acknowledgement.
   3. **End-to-end tick-to-ack**: timestamp at MD receive → timestamp at venue order acknowledgement.
-- Measurements use **monotonic clock** (not wall clock) for intra-process segments.
+- Measurements use Go's **monotonic clock** (`time.Now()` includes monotonic reading; elapsed via `time.Since()`) for intra-process segments.
 - Histograms with percentile tracking (p50, p95, p99) are reported every 10 seconds.
 
 ---
@@ -766,9 +789,11 @@ Reconciler            Periodic position reconciliation   No
 
 ### 10.4 Containerization
 
-- All components packaged in Docker containers for reproducible builds and deployment.
-- `docker-compose` for local development and staging.
+- Multi-stage Docker build: `golang:1.22-alpine` for building, `scratch` (or `gcr.io/distroless/static`) for the final image containing only the static binary + CA certificates.
+- Typical production image size: **~15 MB**.
+- `docker-compose` for local development and staging (includes PostgreSQL, Prometheus, Grafana sidecars).
 - Single-container deployment for the trading process in production (to avoid container networking overhead on the hot path), with sidecar containers for monitoring agents.
+- SQL migrations and default config are embedded in the binary via `//go:embed`, eliminating volume mount dependencies.
 
 ---
 
@@ -805,133 +830,316 @@ Reconciler            Periodic position reconciliation   No
 
 ## 12. Technology Stack
 
-The following stack is recommended for V1. Final choices should be validated against team expertise and venue SDK availability.
+The system is implemented in **Go**, chosen for its compiled performance, lightweight concurrency model (goroutines + channels), low and predictable GC latency, single-binary deployment, and strong standard library support for networking.
 
 | Layer | Technology | Rationale |
 |---|---|---|
-| **Core language** | Python 3.12+ (with performance-critical paths in C extensions or Rust via PyO3) | Rapid development, rich ecosystem for crypto exchange libraries (ccxt), NumPy for computation. Performance-critical paths (order book maintenance, signal computation) can be offloaded to compiled extensions. |
-| **Async runtime** | `asyncio` with `uvloop` | High-performance event loop for concurrent WebSocket and REST operations. |
-| **WebSocket client** | `websockets` or `aiohttp` | Mature async WebSocket implementations. |
-| **HTTP client** | `aiohttp` or `httpx` | Async HTTP with connection pooling. |
-| **Exchange abstraction** | `ccxt` (async mode) | Unified exchange API; fallback to custom adapters if ccxt coverage is insufficient for Nobitex/KCEX. |
-| **In-memory data** | Custom data structures + `numpy` arrays | Lock-free order books, ring buffers for tick data. |
-| **Local persistence** | SQLite (via `aiosqlite`) or RocksDB | Risk checkpoints and recent trade log. |
-| **Cold storage** | PostgreSQL 16+ with TimescaleDB extension | Trade history, PnL, audit logs, time-series analytics. |
-| **Metrics** | Prometheus client (`prometheus_client`) | Native histogram, gauge, counter support. |
-| **Tracing** | OpenTelemetry SDK | Distributed tracing with trace context propagation. |
-| **Logging** | `structlog` | Structured JSON logging with context binding. |
-| **Monitoring dashboard** | Grafana | Visualization of metrics, logs, and traces. |
-| **Alerting** | Prometheus Alertmanager + PagerDuty/Telegram integration | Multi-channel critical alert delivery within 30s SLA. |
-| **Containerization** | Docker + docker-compose | Reproducible builds and deployment. |
-| **Configuration** | YAML files + `pydantic` for schema validation | Type-safe configuration with hot-reload support. |
-| **Testing** | `pytest` + `pytest-asyncio` + `hypothesis` | Unit, integration, and property-based testing. |
+| **Core language** | Go 1.22+ | Compiled binary with sub-millisecond GC pauses, goroutine-based concurrency, strong typing, and a rich standard library for HTTP/WebSocket/crypto. Single binary deployment simplifies operations. |
+| **Concurrency** | Goroutines + channels | Native CSP-style concurrency maps naturally to the event-driven pipeline. Channels provide type-safe, bounded message passing between components. |
+| **WebSocket client** | [`gorilla/websocket`](https://github.com/gorilla/websocket) or [`nhooyr.io/websocket`](https://github.com/nhooyr/websocket) | Mature, production-grade WebSocket implementations. `nhooyr.io/websocket` offers `context.Context` integration and is preferred for new code. |
+| **HTTP client** | `net/http` (stdlib) | Go's standard HTTP client supports connection pooling, keep-alive, timeouts, and TLS out of the box. No external dependency needed. |
+| **Decimal arithmetic** | [`shopspring/decimal`](https://github.com/shopspring/decimal) | Arbitrary-precision decimal math for accurate price, size, and PnL calculations. Avoids floating-point rounding errors critical in financial systems. |
+| **UUID generation** | [`google/uuid`](https://github.com/google/uuid) | UUIDv7 (time-ordered) for internal order IDs, enabling chronological sorting without extra indexing. |
+| **Configuration** | [`spf13/viper`](https://github.com/spf13/viper) + YAML files | File-based config with environment variable override, hot-reload via `fsnotify` watcher, and struct tag-based binding. |
+| **Configuration validation** | [`go-playground/validator`](https://github.com/go-playground/validator) | Struct tag-based validation for configuration structs at load time (e.g., `validate:"required,gt=0"`). |
+| **Local persistence** | [`mattn/go-sqlite3`](https://github.com/mattn/go-sqlite3) (CGo) or [`modernc.org/sqlite`](https://gitlab.com/ACP86/sqlite) (pure Go) | Risk checkpoints and recent trade log. Pure Go option avoids CGo cross-compilation complexity. |
+| **Cold storage** | PostgreSQL 16+ via [`jackc/pgx`](https://github.com/jackc/pgx) | High-performance PostgreSQL driver with connection pooling (`pgxpool`), binary protocol, and batch query support. |
+| **Database migrations** | [`golang-migrate/migrate`](https://github.com/golang-migrate/migrate) | Version-controlled SQL migration files applied at startup. |
+| **Metrics** | [`prometheus/client_golang`](https://github.com/prometheus/client_golang) | Native Prometheus client with histogram, gauge, and counter support. Exposes `/metrics` HTTP endpoint. |
+| **Tracing** | [OpenTelemetry Go SDK](https://github.com/open-telemetry/opentelemetry-go) | Distributed tracing with trace context propagation across goroutines. Exports to Jaeger or OTLP-compatible backends. |
+| **Logging** | [`log/slog`](https://pkg.go.dev/log/slog) (stdlib, Go 1.21+) | Structured JSON logging with context binding. Zero-dependency, high performance. Can be extended with custom handlers for log shipping. |
+| **Monitoring dashboard** | Grafana | Visualization of Prometheus metrics, traces (via Tempo/Jaeger), and logs (via Loki). |
+| **Alerting** | Prometheus Alertmanager + Telegram/PagerDuty integration | Multi-channel critical alert delivery within 30s SLA. |
+| **Containerization** | Docker (multi-stage build) | Minimal scratch-based image containing only the static Go binary + CA certs. Typical image size: ~15 MB. |
+| **Build & CI** | `go build`, `go test`, `golangci-lint`, `goreleaser` | Standard Go toolchain. `golangci-lint` enforces code quality. `goreleaser` produces release binaries and Docker images. |
+| **Testing** | `testing` (stdlib) + [`stretchr/testify`](https://github.com/stretchr/testify) + [`uber-go/mock`](https://github.com/uber-go/mock) | Table-driven tests, mock generation for interfaces, benchmarks via `testing.B`, and race detection via `go test -race`. |
 
-### 12.1 Alternative: High-Performance Stack
+### 12.1 Key Go-Specific Design Choices
 
-If latency requirements cannot be met with Python, the following alternative is considered:
-
-| Layer | Technology |
+| Decision | Detail |
 |---|---|
-| Core language | Rust or C++ |
-| Async runtime | Tokio (Rust) |
-| Advantages | Sub-millisecond internal latency, zero-GC |
-| Trade-off | Longer development cycle, smaller talent pool |
+| **Interface-based composition** | All major components (VenueGateway, Strategy, RiskChecker, CostModel) are defined as Go interfaces. This enables dependency injection, testability via mocks, and the dry-run simulated gateway swap. |
+| **`context.Context` propagation** | Every external call (venue API, database) and long-running goroutine accepts a `context.Context` for cancellation and timeout propagation. The kill switch cancels the root context, triggering graceful shutdown across all goroutines. |
+| **Error handling** | Errors are returned explicitly (no panics on the hot path). Sentinel errors and custom error types are used for classifying venue errors (transient vs. permanent) to drive retry logic. |
+| **`sync.Pool` for hot-path allocations** | Order book update structs, signal objects, and serialization buffers are pooled to minimize heap allocations on the critical path. |
+| **`GOGC` and `GOMEMLIMIT` tuning** | Production runtime is configured with `GOGC=400` and `GOMEMLIMIT=2GiB` (adjusted per deployment) to reduce GC frequency while bounding memory usage. |
+| **Single binary deployment** | `CGO_ENABLED=0` static build (or `CGO_ENABLED=1` only if using `go-sqlite3`). The entire application ships as one binary with embedded config schema and migration files via `embed`. |
+| **`go:embed` for static assets** | SQL migration files and default configuration schemas are embedded into the binary at compile time using `//go:embed` directives, eliminating filesystem dependencies at runtime. |
 
-This decision should be made after benchmarking the Python implementation against latency targets.
+### 12.2 Dependency Summary
+
+```
+go 1.22
+
+require (
+    github.com/gorilla/websocket   v1.5.x    // or nhooyr.io/websocket v1.8.x
+    github.com/shopspring/decimal   v1.4.x
+    github.com/google/uuid          v1.6.x
+    github.com/spf13/viper          v1.18.x
+    github.com/jackc/pgx/v5         v5.6.x
+    github.com/prometheus/client_golang v1.19.x
+    go.opentelemetry.io/otel        v1.28.x
+    github.com/stretchr/testify     v1.9.x
+    github.com/golang-migrate/migrate/v4 v4.17.x
+    modernc.org/sqlite              v1.30.x   // pure-Go SQLite
+    github.com/go-playground/validator/v10 v10.22.x
+)
+```
 
 ---
 
-## 13. Data Model
+## 13. Project Layout
 
-### 13.1 Core Entities
+The project follows the [Standard Go Project Layout](https://github.com/golang-standards/project-layout) conventions, adapted for a single-binary trading system.
 
 ```
-┌─────────────────────────────────────────────┐
-│ OrderBookSnapshot                           │
-├─────────────────────────────────────────────┤
-│ venue: str                                  │
-│ symbol: str                                 │
-│ bids: List[(price, size)]                   │
-│ asks: List[(price, size)]                   │
-│ sequence: int                               │
-│ venue_timestamp: datetime                   │
-│ local_timestamp: datetime                   │
-└─────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────┐
-│ TradeSignal                                 │
-├─────────────────────────────────────────────┤
-│ signal_id: UUID                             │
-│ strategy: StrategyType                      │
-│ venue: str                                  │
-│ legs: List[LegSpec]                         │
-│ expected_edge_bps: float                    │
-│ cost_estimate: CostEstimate                 │
-│ confidence: float                           │
-│ created_at: datetime                        │
-│ market_data_timestamp: datetime             │
-└─────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────┐
-│ LegSpec                                     │
-├─────────────────────────────────────────────┤
-│ symbol: str                                 │
-│ side: BUY | SELL                            │
-│ instrument_type: SPOT | PERP               │
-│ price: Decimal                              │
-│ size: Decimal                               │
-│ order_type: LIMIT | MARKET                  │
-└─────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────┐
-│ Order                                       │
-├─────────────────────────────────────────────┤
-│ internal_id: UUID                           │
-│ venue_id: str                               │
-│ signal_id: UUID                             │
-│ venue: str                                  │
-│ symbol: str                                 │
-│ side: BUY | SELL                            │
-│ order_type: LIMIT | MARKET                  │
-│ price: Decimal                              │
-│ size: Decimal                               │
-│ filled_size: Decimal                        │
-│ avg_fill_price: Decimal                     │
-│ status: OrderStatus                         │
-│ created_at: datetime                        │
-│ updated_at: datetime                        │
-└─────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────┐
-│ Position                                    │
-├─────────────────────────────────────────────┤
-│ venue: str                                  │
-│ asset: str                                  │
-│ instrument_type: SPOT | PERP               │
-│ size: Decimal  (positive=long, neg=short)   │
-│ entry_price: Decimal                        │
-│ unrealized_pnl: Decimal                     │
-│ margin_used: Decimal (perp only)            │
-│ updated_at: datetime                        │
-└─────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────┐
-│ RiskState                                   │
-├─────────────────────────────────────────────┤
-│ mode: NORMAL | WARNING | DEGRADED |         │
-│       DATA_STALE | HALTED                   │
-│ daily_realized_pnl: Decimal                 │
-│ daily_unrealized_pnl: Decimal               │
-│ positions: Map<(venue, asset), Position>    │
-│ open_order_counts: OrderCountState          │
-│ venue_notionals: Map<venue, Decimal>        │
-│ last_checkpoint: datetime                   │
-│ kill_switch_active: bool                    │
-│ kill_switch_reason: str | null              │
-└─────────────────────────────────────────────┘
+trading/
+├── cmd/
+│   └── trader/
+│       └── main.go                 # Application entry point, wires dependencies
+│
+├── internal/                       # Private application code (not importable by external projects)
+│   ├── config/
+│   │   ├── config.go               # Config structs with viper binding + validator tags
+│   │   └── loader.go               # Load, validate, watch for hot-reload
+│   │
+│   ├── domain/                     # Core domain types shared across packages
+│   │   ├── order.go                # Order, OrderStatus, LegSpec
+│   │   ├── position.go             # Position, Balance
+│   │   ├── signal.go               # TradeSignal, StrategyType
+│   │   ├── book.go                 # OrderBookSnapshot, PriceLevel
+│   │   └── risk.go                 # RiskState, RiskMode
+│   │
+│   ├── marketdata/
+│   │   ├── service.go              # Market Data Service: book maintenance, staleness
+│   │   └── ringbuffer.go           # Lock-free ring buffer for trade ticks
+│   │
+│   ├── strategy/
+│   │   ├── engine.go               # Strategy Engine: dispatches to modules
+│   │   ├── triarb.go               # Triangular arbitrage detection
+│   │   └── basisarb.go             # Cross-market basis arbitrage detection
+│   │
+│   ├── risk/
+│   │   ├── manager.go              # Risk Manager: limit checks, state machine
+│   │   ├── killswitch.go           # Kill switch logic and persistence
+│   │   └── pnl.go                  # Daily PnL tracker
+│   │
+│   ├── execution/
+│   │   ├── engine.go               # Execution Engine: leg sequencing, timeout, retry
+│   │   └── quality.go              # Fill quality / slippage tracking
+│   │
+│   ├── order/
+│   │   ├── manager.go              # Order Manager: lifecycle, dedup, state events
+│   │   └── idgen.go                # UUIDv7 order ID generator
+│   │
+│   ├── costmodel/
+│   │   ├── service.go              # Cost Model Service: fee + slippage estimation
+│   │   └── slippage.go             # Piecewise linear slippage curves
+│   │
+│   ├── portfolio/
+│   │   ├── manager.go              # Position & Portfolio Manager
+│   │   └── reconciler.go           # Periodic venue reconciliation
+│   │
+│   ├── gateway/                    # Venue Gateway Layer
+│   │   ├── gateway.go              # VenueGateway interface definition
+│   │   ├── nobitex/
+│   │   │   ├── adapter.go          # Nobitex gateway implementation
+│   │   │   ├── ws.go               # WebSocket connection management
+│   │   │   └── rest.go             # REST API client + signing
+│   │   ├── kcex/
+│   │   │   ├── adapter.go          # KCEX gateway implementation
+│   │   │   ├── ws.go               # WebSocket connection management
+│   │   │   └── rest.go             # REST API client + signing
+│   │   ├── simulated/
+│   │   │   ├── adapter.go          # Simulated (dry-run) gateway
+│   │   │   └── fillsim.go          # Fill simulation engine
+│   │   └── ratelimit.go            # Token bucket rate limiter
+│   │
+│   ├── eventbus/
+│   │   └── bus.go                  # In-process pub/sub with typed channels
+│   │
+│   ├── persistence/
+│   │   ├── sqlite.go               # SQLite checkpoint store
+│   │   ├── postgres.go             # PostgreSQL cold store client
+│   │   └── writer.go               # Async write goroutine with backpressure
+│   │
+│   └── monitor/
+│       ├── metrics.go              # Prometheus metric definitions + registration
+│       ├── tracing.go              # OpenTelemetry tracer setup
+│       └── alerts.go               # Alert rule evaluation + notification dispatch
+│
+├── migrations/                     # SQL migration files (embedded via //go:embed)
+│   ├── 001_create_trades.up.sql
+│   ├── 001_create_trades.down.sql
+│   ├── 002_create_strategy_cycles.up.sql
+│   └── ...
+│
+├── configs/                        # Example / default configuration files
+│   ├── config.example.yaml
+│   └── config.schema.json          # Optional JSON Schema for editor validation
+│
+├── scripts/                        # Development and deployment helpers
+│   ├── docker-compose.yml          # Local dev stack (Postgres, Prometheus, Grafana)
+│   └── Makefile                    # build, test, lint, run targets
+│
+├── Dockerfile                      # Multi-stage build → scratch image
+├── go.mod
+├── go.sum
+└── README.md
 ```
 
-### 13.2 Database Schema (Cold Store)
+**Package dependency rules**:
+
+- `domain` depends on nothing internal (only stdlib + `shopspring/decimal`).
+- `gateway`, `strategy`, `risk`, `execution`, `costmodel`, `portfolio`, `order` depend on `domain` and optionally on each other's interfaces (never concrete types).
+- `cmd/trader/main.go` is the sole composition root: it creates all concrete implementations and wires them together.
+- No package imports `cmd/` or `internal/` from another package at the same level — all dependencies flow inward toward `domain`.
+
+---
+
+## 14. Data Model
+
+### 14.1 Core Entities
+
+```go
+// --- Enums (typed constants) ---
+
+type Side string
+const (
+    SideBuy  Side = "BUY"
+    SideSell Side = "SELL"
+)
+
+type InstrumentType string
+const (
+    InstrumentSpot InstrumentType = "SPOT"
+    InstrumentPerp InstrumentType = "PERP"
+)
+
+type OrderType string
+const (
+    OrderTypeLimit  OrderType = "LIMIT"
+    OrderTypeMarket OrderType = "MARKET"
+)
+
+type OrderStatus string
+const (
+    OrderStatusPendingNew   OrderStatus = "PENDING_NEW"
+    OrderStatusSubmitted    OrderStatus = "SUBMITTED"
+    OrderStatusAcknowledged OrderStatus = "ACKNOWLEDGED"
+    OrderStatusPartialFill  OrderStatus = "PARTIAL_FILL"
+    OrderStatusFilled       OrderStatus = "FILLED"
+    OrderStatusCancelled    OrderStatus = "CANCELLED"
+    OrderStatusRejected     OrderStatus = "REJECTED"
+    OrderStatusSubmitFailed OrderStatus = "SUBMIT_FAILED"
+)
+
+type StrategyType string
+const (
+    StrategyTriArb   StrategyType = "TRI_ARB"
+    StrategyBasisArb StrategyType = "BASIS_ARB"
+)
+
+type RiskMode string
+const (
+    RiskModeNormal    RiskMode = "NORMAL"
+    RiskModeWarning   RiskMode = "WARNING"
+    RiskModeDegraded  RiskMode = "DEGRADED"
+    RiskModeDataStale RiskMode = "DATA_STALE"
+    RiskModeHalted    RiskMode = "HALTED"
+)
+
+// --- Core structs ---
+
+type PriceLevel struct {
+    Price decimal.Decimal
+    Size  decimal.Decimal
+}
+
+type OrderBookSnapshot struct {
+    Venue          string
+    Symbol         string
+    Bids           []PriceLevel  // sorted descending by price
+    Asks           []PriceLevel  // sorted ascending by price
+    Sequence       uint64
+    VenueTimestamp time.Time
+    LocalTimestamp time.Time
+}
+
+type TradeSignal struct {
+    SignalID            uuid.UUID
+    Strategy            StrategyType
+    Venue               string
+    Legs                []LegSpec
+    ExpectedEdgeBps     float64
+    CostEstimate        CostEstimate
+    Confidence          float64
+    CreatedAt           time.Time
+    MarketDataTimestamp time.Time
+}
+
+type LegSpec struct {
+    Symbol         string
+    Side           Side
+    InstrumentType InstrumentType
+    Price          decimal.Decimal
+    Size           decimal.Decimal
+    OrderType      OrderType
+}
+
+type Order struct {
+    InternalID   uuid.UUID
+    VenueID      string
+    SignalID     uuid.UUID
+    Venue        string
+    Symbol       string
+    Side         Side
+    OrderType    OrderType
+    Price        decimal.Decimal
+    Size         decimal.Decimal
+    FilledSize   decimal.Decimal
+    AvgFillPrice decimal.Decimal
+    Status       OrderStatus
+    CreatedAt    time.Time
+    UpdatedAt    time.Time
+}
+
+type Position struct {
+    Venue          string
+    Asset          string
+    InstrumentType InstrumentType
+    Size           decimal.Decimal // positive = long, negative = short
+    EntryPrice     decimal.Decimal
+    UnrealizedPnL  decimal.Decimal
+    MarginUsed     decimal.Decimal // perp only
+    UpdatedAt      time.Time
+}
+
+type VenueAssetKey struct {
+    Venue string
+    Asset string
+}
+
+type RiskState struct {
+    Mode              RiskMode
+    DailyRealizedPnL  decimal.Decimal
+    DailyUnrealizedPnL decimal.Decimal
+    Positions         map[VenueAssetKey]*Position
+    OpenOrderCounts   OrderCountState
+    VenueNotionals    map[string]decimal.Decimal
+    LastCheckpoint    time.Time
+    KillSwitchActive  bool
+    KillSwitchReason  string // empty when inactive
+}
+
+type OrderCountState struct {
+    Global   int
+    PerVenue map[string]int
+    PerSymbol map[string]int
+}
+```
+
+### 14.2 Database Schema (Cold Store)
 
 ```sql
 -- Trade history
@@ -1004,11 +1212,11 @@ CREATE TABLE config_audit (
 
 ---
 
-## 14. Dry Run / Paper Trading Mode
+## 15. Dry Run / Paper Trading Mode
 
 The system supports a **dry run (paper trading) mode** that simulates the full trading pipeline — from signal detection through execution — without placing real orders on any venue. This mode is essential for strategy validation, system integration testing, cost model calibration, and operator training before committing real capital.
 
-### 14.1 Overview
+### 15.1 Overview
 
 When dry run mode is enabled, the system behaves identically to live trading with one critical difference: the Execution Engine routes orders to a **Simulated Venue Gateway** instead of the real venue adapters. All other components — Market Data Service, Strategy Engine, Risk Manager, Cost Model, Position Manager, Monitoring — operate normally against **live market data**.
 
@@ -1034,7 +1242,7 @@ When dry run mode is enabled, the system behaves identically to live trading wit
                           └──────────────────────────┘
 ```
 
-### 14.2 Operating Modes
+### 15.2 Operating Modes
 
 The system supports three operating modes, controlled by a single configuration parameter:
 
@@ -1046,7 +1254,7 @@ The system supports three operating modes, controlled by a single configuration 
 
 The `dry_run` mode is the focus of this section. Backtest mode shares the same simulation engine but replays historical data instead of consuming live feeds; it is a post-V1 enhancement but the architecture accommodates it.
 
-### 14.3 Simulated Venue Gateway
+### 15.3 Simulated Venue Gateway
 
 The Simulated Venue Gateway implements the same `VenueGateway` interface as the real adapters (see [Section 5.8](#58-venue-gateway-layer)), making it a drop-in replacement with no changes to upstream components.
 
@@ -1063,19 +1271,21 @@ The Simulated Venue Gateway implements the same `VenueGateway` interface as the 
 
 **Fill model configuration**:
 
-```
-interface FillSimulator {
-    simulate_fill(order: OrderRequest, book: OrderBookSnapshot) → SimulatedFill {
-        fill_price: Decimal,     // best bid/ask ± slippage
-        fill_size: Decimal,      // min(order_size, available_liquidity)
-        fee: Decimal,            // from cost model
-        latency_ms: int,         // simulated venue RTT
-        status: FILLED | PARTIAL | REJECTED
-    }
+```go
+type SimulatedFill struct {
+    FillPrice decimal.Decimal // best bid/ask ± slippage
+    FillSize  decimal.Decimal // min(order_size, available_liquidity)
+    Fee       decimal.Decimal // from cost model
+    LatencyMs int             // simulated venue RTT
+    Status    OrderStatus     // FILLED, PARTIAL_FILL, or REJECTED
+}
+
+type FillSimulator interface {
+    SimulateFill(order OrderRequest, book *OrderBookSnapshot) (*SimulatedFill, error)
 }
 ```
 
-### 14.4 Simulated Position & PnL Tracking
+### 15.4 Simulated Position & PnL Tracking
 
 In dry run mode, the Position & Portfolio Manager tracks simulated positions in a **separate namespace** from any real positions:
 
@@ -1084,7 +1294,7 @@ In dry run mode, the Position & Portfolio Manager tracks simulated positions in 
 - PnL is computed identically to live mode (mark-to-market against live prices).
 - Daily PnL loss cap and all risk limits are enforced against the simulated portfolio, so the system behaves exactly as it would in production.
 
-### 14.5 Observability in Dry Run
+### 15.5 Observability in Dry Run
 
 All metrics, traces, and logs emitted during dry run are tagged with `mode: dry_run` to distinguish them from live trading data:
 
@@ -1103,7 +1313,7 @@ All metrics, traces, and logs emitted during dry run are tagged with `mode: dry_
 | `dry_run_slippage_model_error_bps` | Difference between modeled slippage and what live book depth would have produced |
 | `dry_run_signal_to_stale_pct` | Percentage of signals that became stale before simulated fill (latency proxy) |
 
-### 14.6 Dry Run Safeguards
+### 15.6 Dry Run Safeguards
 
 | Safeguard | Detail |
 |---|---|
@@ -1113,7 +1323,7 @@ All metrics, traces, and logs emitted during dry run are tagged with `mode: dry_
 | **Isolated persistence** | Dry run trades are written to a separate database table (`dry_run_trades`) or tagged with a `mode` column, preventing confusion with real trade history. |
 | **No venue-side effects** | The Simulated Venue Gateway never opens network connections to venue trading endpoints; only market data connections are used. |
 
-### 14.7 Transition from Dry Run to Live
+### 15.7 Transition from Dry Run to Live
 
 The recommended promotion workflow:
 
@@ -1138,7 +1348,7 @@ The recommended promotion workflow:
 
 ---
 
-## 15. Failure Modes & Recovery
+## 16. Failure Modes & Recovery
 
 | Failure Mode | Detection | Automated Response | Manual Follow-up |
 |---|---|---|---|
@@ -1148,11 +1358,11 @@ The recommended promotion workflow:
 | **Partial fill on tri-arb leg** | Fill monitoring timeout | Hedge residual exposure; cancel unfilled legs | Review fill quality; adjust sizing |
 | **Position reconciliation mismatch** | Periodic reconciliation | Block trading for affected venue; raise P1 alert | Manual position verification and correction |
 | **Daily PnL breach** | PnL check on every fill | Kill switch: cancel all orders, flatten exposure | Root cause analysis; manual resume |
-| **Process crash** | Process monitor / systemd | Auto-restart; reconstruct state from checkpoint + venue queries | Verify state consistency; review crash logs |
+| **Process crash / panic** | Process monitor (systemd / Docker restart policy) | Auto-restart; `recover()` in top-level goroutines prevents single-goroutine panics from crashing the process; on full restart, state is reconstructed from checkpoint + venue queries | Verify state consistency; review crash logs and goroutine stack dump |
 | **Database write failure** | Write thread error count | Buffer writes in memory; retry; alert if buffer nears capacity | Fix DB connectivity; replay buffered writes |
 | **Configuration error** | Schema validation | Reject invalid config; continue with last valid config | Fix configuration; verify schema |
 
-### 15.1 Startup & Recovery Sequence
+### 16.1 Startup & Recovery Sequence
 
 ```
 1. Load configuration (validate schema)
@@ -1172,7 +1382,7 @@ The recommended promotion workflow:
 
 ---
 
-## 16. Future Considerations (Post-V1)
+## 17. Future Considerations (Post-V1)
 
 The architecture is designed with the following future expansions in mind, though none are in V1 scope:
 
@@ -1311,10 +1521,16 @@ dry_run:
   persist_to_separate_table: true
 
 persistence:
-  checkpoint_db: "sqlite:///data/checkpoints.db"
-  cold_store: "postgresql://user:pass@db-host:5432/trading"
+  checkpoint_db: "./data/checkpoints.db"  # SQLite path (modernc.org/sqlite)
+  cold_store_dsn: "postgres://user:pass@db-host:5432/trading?sslmode=require"  # pgx DSN
+  cold_store_pool_size: 10
   trade_log_retention_days: 30
   metrics_retention:
     full_resolution_days: 90
     downsampled_years: 2
+
+runtime:
+  gomaxprocs: 0       # 0 = use all available cores
+  gogc: 400           # reduce GC frequency on hot path
+  gomemlimit: "2GiB"  # hard memory ceiling
 ```
