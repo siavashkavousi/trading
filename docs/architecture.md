@@ -91,6 +91,21 @@ Market Data → Signal Detection → Risk Check → Order Generation → Executi
 | **Idempotent operations** | Order submissions, cancellations, and state transitions are idempotent to handle retries safely in the presence of network instability. |
 | **Observable by default** | Every component emits structured metrics, traces, and logs. Silent failures are treated as architecture bugs. |
 
+### 3.1 Why Not Formal Hexagonal Architecture?
+
+The system uses **interface-based boundaries** at integration points rather than a formal hexagonal (ports & adapters) architecture. This is a deliberate choice:
+
+| Hexagonal concept | What we do instead | Rationale |
+|---|---|---|
+| Explicit `ports/` package with `inbound`/`outbound` sub-packages | Interfaces defined alongside the package that owns the contract (e.g., `gateway.VenueGateway` in `internal/gateway/`) | Avoids a package that exists only to hold interface declarations, reducing navigational overhead in a single-binary app. |
+| Application services layer between domain and ports | Strategy Engine, Risk Manager, and Execution Engine call interfaces directly | The hot path (signal → risk → execute) must be as direct as possible. An extra layer adds call depth and complicates latency tracing for negligible abstraction benefit. |
+| Domain services vs. application services | Single `internal/domain/` package for shared types; business logic lives in purpose-named packages (`strategy/`, `risk/`, `execution/`) | The domain is narrow (arbitrage detection, risk, order management). Further subdivision fragments code that developers need to read together. |
+| Framework-managed dependency injection | Manual wiring in `cmd/trader/main.go` | Go's implicit interface satisfaction provides decoupling without a DI container. The composition root is ~100 lines and easily auditable. |
+
+**What we keep from hexagonal:** the core insight that external dependencies (venues, databases, metrics backends) must sit behind interfaces so they can be swapped (real ↔ simulated for dry run, real ↔ mock for tests) without touching business logic. The `VenueGateway` interface with its Nobitex, KCEX, and Simulated adapters is this pattern in practice.
+
+**Why this fits Go:** The Go community favors flat package structures, concrete-first design (define an interface when you need a second implementation, not before), and minimal indirection. Formal hexagonal in Go codebases often results in single-file packages and redundant type aliases that add ceremony without clarity.
+
 ---
 
 ## 4. High-Level Architecture
