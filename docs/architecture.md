@@ -314,11 +314,11 @@ USDT → BTC (buy BTC/USDT) → ETH (sell BTC/ETH or equivalent) → USDT (sell 
 **Interface**:
 ```go
 type CostEstimate struct {
-    FeeBps      float64
-    SlippageBps float64
-    FundingBps  *float64 // nil when not applicable
-    TotalBps    float64
-    Confidence  float64
+    FeeBps      decimal.Decimal
+    SlippageBps decimal.Decimal
+    FundingBps  *decimal.Decimal // nil when not applicable
+    TotalBps    decimal.Decimal
+    Confidence  decimal.Decimal
 }
 
 type CostModelService interface {
@@ -1086,9 +1086,9 @@ type TradeSignal struct {
     Strategy            StrategyType
     Venue               string
     Legs                []LegSpec
-    ExpectedEdgeBps     float64
+    ExpectedEdgeBps     decimal.Decimal
     CostEstimate        CostEstimate
-    Confidence          float64
+    Confidence          decimal.Decimal
     CreatedAt           time.Time
     MarketDataTimestamp time.Time
 }
