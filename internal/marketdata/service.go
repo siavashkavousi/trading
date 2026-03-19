@@ -238,6 +238,20 @@ func (s *Service) RunHeartbeatMonitor(ctx context.Context) {
 	}
 }
 
+func (s *Service) GetFeedStatus() map[string]time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make(map[string]time.Time, len(s.lastUpdate))
+	for k, v := range s.lastUpdate {
+		result[k] = v
+	}
+	return result
+}
+
+func (s *Service) StaleDuration() time.Duration {
+	return s.staleDuration
+}
+
 func (s *Service) checkStaleness() {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

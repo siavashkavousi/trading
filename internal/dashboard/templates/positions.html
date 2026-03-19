@@ -1,0 +1,107 @@
+{{define "content"}}
+<div id="positions-content"
+     hx-get="/fragments/positions"
+     hx-trigger="every 2s"
+     hx-swap="innerHTML">
+    {{template "positions-data" .}}
+</div>
+{{end}}
+
+{{define "positions-data"}}
+<div class="space-y-6">
+    <h2 class="text-xl font-semibold text-white">Positions & Balances</h2>
+
+    <!-- Perpetual Positions -->
+    <div class="bg-slate-900 rounded-xl border border-slate-800 p-5">
+        <h3 class="text-sm font-medium text-slate-400 mb-4">Perpetual Positions</h3>
+        {{if .Positions}}
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="text-slate-500 text-xs uppercase tracking-wider border-b border-slate-800">
+                            <th class="text-left pb-2 font-medium">Venue</th>
+                            <th class="text-left pb-2 font-medium">Asset</th>
+                            <th class="text-left pb-2 font-medium">Type</th>
+                            <th class="text-left pb-2 font-medium">Direction</th>
+                            <th class="text-right pb-2 font-medium">Size</th>
+                            <th class="text-right pb-2 font-medium">Entry Price</th>
+                            <th class="text-right pb-2 font-medium">Unrealized PnL</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-800/50">
+                        {{range .Positions}}
+                            <tr class="hover:bg-slate-800/30">
+                                <td class="py-2.5 text-slate-300">{{.Venue}}</td>
+                                <td class="py-2.5 font-medium text-slate-200">{{.Asset}}</td>
+                                <td class="py-2.5">
+                                    <span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium
+                                        {{if eq .Instrument "PERP"}}text-violet-400 bg-violet-400/10{{else}}text-sky-400 bg-sky-400/10{{end}}">
+                                        {{.Instrument}}
+                                    </span>
+                                </td>
+                                <td class="py-2.5">
+                                    {{if .IsLong}}
+                                        <span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium text-emerald-400 bg-emerald-400/10">LONG</span>
+                                    {{else}}
+                                        <span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium text-rose-400 bg-rose-400/10">SHORT</span>
+                                    {{end}}
+                                </td>
+                                <td class="py-2.5 text-right font-mono {{if .IsLong}}text-emerald-400{{else}}text-rose-400{{end}}">
+                                    {{.Size}}
+                                </td>
+                                <td class="py-2.5 text-right font-mono text-slate-300">{{.EntryPrice}}</td>
+                                <td class="py-2.5 text-right font-mono text-slate-300">{{.UnrealizedPnL}}</td>
+                            </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+        {{else}}
+            <div class="flex flex-col items-center justify-center py-12 text-slate-600">
+                <svg class="h-12 w-12 mb-3" fill="none" viewBox="0 0 24 24" stroke-width="1" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
+                </svg>
+                <p class="text-sm">No open positions</p>
+            </div>
+        {{end}}
+    </div>
+
+    <!-- Spot Balances -->
+    <div class="bg-slate-900 rounded-xl border border-slate-800 p-5">
+        <h3 class="text-sm font-medium text-slate-400 mb-4">Spot Balances</h3>
+        {{if .Balances}}
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="text-slate-500 text-xs uppercase tracking-wider border-b border-slate-800">
+                            <th class="text-left pb-2 font-medium">Venue</th>
+                            <th class="text-left pb-2 font-medium">Asset</th>
+                            <th class="text-right pb-2 font-medium">Free</th>
+                            <th class="text-right pb-2 font-medium">Locked</th>
+                            <th class="text-right pb-2 font-medium">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-800/50">
+                        {{range .Balances}}
+                            <tr class="hover:bg-slate-800/30">
+                                <td class="py-2.5 text-slate-300">{{.Venue}}</td>
+                                <td class="py-2.5 font-medium text-slate-200">{{.Asset}}</td>
+                                <td class="py-2.5 text-right font-mono text-emerald-400">{{.Free}}</td>
+                                <td class="py-2.5 text-right font-mono text-amber-400">{{.Locked}}</td>
+                                <td class="py-2.5 text-right font-mono text-slate-200">{{.Total}}</td>
+                            </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+        {{else}}
+            <div class="flex flex-col items-center justify-center py-12 text-slate-600">
+                <svg class="h-12 w-12 mb-3" fill="none" viewBox="0 0 24 24" stroke-width="1" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a2.25 2.25 0 00-2.25-2.25H15a3 3 0 11-6 0H5.25A2.25 2.25 0 003 12m18 0v6a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 9m18 0V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v3" />
+                </svg>
+                <p class="text-sm">No balances available</p>
+            </div>
+        {{end}}
+    </div>
+</div>
+{{end}}

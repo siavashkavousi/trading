@@ -165,6 +165,17 @@ func (m *Manager) GetAllPositions() map[domain.VenueAssetKey]*domain.Position {
 	return result
 }
 
+func (m *Manager) GetAllBalances() map[domain.VenueAssetKey]*domain.Balance {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[domain.VenueAssetKey]*domain.Balance, len(m.spotBalances))
+	for k, v := range m.spotBalances {
+		b := *v
+		result[k] = &b
+	}
+	return result
+}
+
 func (m *Manager) DailyRealizedPnL() decimal.Decimal {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

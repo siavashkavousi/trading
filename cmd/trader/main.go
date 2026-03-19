@@ -18,6 +18,7 @@ import (
 
 	"github.com/crypto-trading/trading/internal/config"
 	"github.com/crypto-trading/trading/internal/costmodel"
+	"github.com/crypto-trading/trading/internal/dashboard"
 	"github.com/crypto-trading/trading/internal/domain"
 	"github.com/crypto-trading/trading/internal/eventbus"
 	"github.com/crypto-trading/trading/internal/execution"
@@ -224,6 +225,25 @@ func main() {
 		}
 	}()
 
+	var dashServer *dashboard.Server
+	if cfg.Dashboard.Enabled {
+		dashServer = dashboard.New(
+			cfg.Dashboard.Address(),
+			cfg,
+			riskMgr,
+			orderMgr,
+			portfolioMgr,
+			mdService,
+			logger,
+		)
+		go func() {
+			if err := dashServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("dashboard server error", "error", err)
+			}
+		}()
+		logger.Info("dashboard started", "addr", cfg.Dashboard.Address())
+	}
+
 	if err := config.WatchAndReload(*configPath, func(newCfg *config.Config) {
 		logger.Info("configuration reloaded")
 	}); err != nil {
@@ -253,6 +273,12 @@ func main() {
 	for name, gw := range gateways {
 		if err := gw.Close(); err != nil {
 			logger.Error("failed to close venue gateway", "venue", name, "error", err)
+		}
+	}
+
+	if dashServer != nil {
+		if err := dashServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("failed to shut down dashboard server", "error", err)
 		}
 	}
 

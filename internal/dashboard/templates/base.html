@@ -1,0 +1,73 @@
+{{define "base"}}
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
+                    },
+                },
+            },
+        }
+    </script>
+    <style>
+        @keyframes pulse-slow { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+        .pulse-slow { animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        .htmx-settling { opacity: 1; transition: opacity 200ms ease-in; }
+    </style>
+</head>
+<body class="h-full bg-slate-950 text-slate-100 antialiased">
+    {{template "nav" .}}
+    <main class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6">
+        {{template "content" .}}
+    </main>
+</body>
+</html>
+{{end}}
+
+{{define "nav"}}
+<nav class="bg-slate-900/80 backdrop-blur-sm border-b border-slate-800 sticky top-0 z-50">
+    <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div class="flex h-14 items-center justify-between">
+            <div class="flex items-center gap-8">
+                <div class="flex items-center gap-2">
+                    <svg class="h-6 w-6 text-sky-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+                    </svg>
+                    <span class="text-lg font-semibold text-white tracking-tight">Trader</span>
+                </div>
+                <div class="flex gap-1">
+                    <a href="/" class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors {{if eq .Page "overview"}}bg-slate-800 text-white{{else}}text-slate-400 hover:text-white hover:bg-slate-800/50{{end}}">
+                        Overview
+                    </a>
+                    <a href="/positions" class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors {{if eq .Page "positions"}}bg-slate-800 text-white{{else}}text-slate-400 hover:text-white hover:bg-slate-800/50{{end}}">
+                        Positions
+                    </a>
+                    <a href="/orders" class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors {{if eq .Page "orders"}}bg-slate-800 text-white{{else}}text-slate-400 hover:text-white hover:bg-slate-800/50{{end}}">
+                        Orders
+                    </a>
+                    <a href="/risk" class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors {{if eq .Page "risk"}}bg-slate-800 text-white{{else}}text-slate-400 hover:text-white hover:bg-slate-800/50{{end}}">
+                        Risk
+                    </a>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <span class="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset {{modeColor .System.TradingMode}}">
+                    {{.System.TradingMode}}
+                </span>
+                <span class="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset {{riskModeColor .System.RiskMode}}">
+                    {{.System.RiskMode}}
+                </span>
+            </div>
+        </div>
+    </div>
+</nav>
+{{end}}
