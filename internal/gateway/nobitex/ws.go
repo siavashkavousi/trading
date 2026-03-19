@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/shopspring/decimal"
 
 	"github.com/crypto-trading/trading/internal/domain"
 )
@@ -19,15 +20,22 @@ type wsClient struct {
 	mu     sync.Mutex
 	logger *slog.Logger
 
-	reconnectMax   time.Duration
-	reconnectBase  time.Duration
-	maxFailures    int
-	failureCount   int
+	reconnectMax  time.Duration
+	reconnectBase time.Duration
+	maxFailures   int
+	failureCount  int
+
+	subscriptions []wsSubscription
 
 	orderBookChans map[string]chan domain.OrderBookDelta
 	tradeChans     map[string]chan domain.Trade
 	fundingChans   map[string]chan domain.FundingRate
 	chanMu         sync.RWMutex
+}
+
+type wsSubscription struct {
+	symbol  string
+	channel string
 }
 
 func newWSClient(url string, logger *slog.Logger) *wsClient {
@@ -58,7 +66,7 @@ func (ws *wsClient) connect(ctx context.Context) error {
 
 	ws.conn = conn
 	ws.failureCount = 0
-	ws.logger.Info("websocket connected", "url", ws.url)
+	ws.logger.Info("nobitex websocket connected", "url", ws.url)
 	return nil
 }
 
@@ -72,13 +80,19 @@ func (ws *wsClient) reconnect(ctx context.Context) error {
 		}
 
 		if err := ws.connect(ctx); err != nil {
-			ws.logger.Warn("reconnect attempt failed",
+			ws.logger.Warn("nobitex reconnect attempt failed",
 				"attempt", i+1, "error", err)
 			delay *= 2
 			if delay > ws.reconnectMax {
 				delay = ws.reconnectMax
 			}
 			continue
+		}
+		for _, sub := range ws.subscriptions {
+			if err := ws.sendSubscribe(sub.symbol, sub.channel); err != nil {
+				ws.logger.Warn("failed to resubscribe after reconnect",
+					"symbol", sub.symbol, "channel", sub.channel, "error", err)
+			}
 		}
 		return nil
 	}
@@ -87,6 +101,11 @@ func (ws *wsClient) reconnect(ctx context.Context) error {
 }
 
 func (ws *wsClient) subscribe(symbol, channel string) error {
+	ws.subscriptions = append(ws.subscriptions, wsSubscription{symbol: symbol, channel: channel})
+	return ws.sendSubscribe(symbol, channel)
+}
+
+func (ws *wsClient) sendSubscribe(symbol, channel string) error {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 
@@ -94,10 +113,12 @@ func (ws *wsClient) subscribe(symbol, channel string) error {
 		return fmt.Errorf("websocket not connected")
 	}
 
+	// Nobitex WS subscribe format
 	msg := map[string]interface{}{
-		"action":  "subscribe",
-		"channel": channel,
-		"symbol":  symbol,
+		"method": "subscribe",
+		"params": map[string]interface{}{
+			"channel": channel + ":" + symbol,
+		},
 	}
 	return ws.conn.WriteJSON(msg)
 }
@@ -121,9 +142,9 @@ func (ws *wsClient) readPump(ctx context.Context) {
 
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			ws.logger.Error("websocket read error", "error", err)
+			ws.logger.Error("nobitex websocket read error", "error", err)
 			if reconnErr := ws.reconnect(ctx); reconnErr != nil {
-				ws.logger.Error("reconnection failed permanently", "error", reconnErr)
+				ws.logger.Error("nobitex reconnection failed permanently", "error", reconnErr)
 				return
 			}
 			continue
@@ -134,108 +155,125 @@ func (ws *wsClient) readPump(ctx context.Context) {
 }
 
 func (ws *wsClient) handleMessage(msg []byte) {
-	var raw map[string]json.RawMessage
+	var raw struct {
+		Channel string          `json:"channel"`
+		Data    json.RawMessage `json:"data"`
+	}
 	if err := json.Unmarshal(msg, &raw); err != nil {
-		ws.logger.Warn("failed to parse websocket message", "error", err)
+		ws.logger.Debug("failed to parse nobitex websocket message", "error", err)
 		return
 	}
 
-	channelRaw, ok := raw["channel"]
-	if !ok {
+	if raw.Channel == "" {
 		return
 	}
 
-	var channel string
-	if err := json.Unmarshal(channelRaw, &channel); err != nil {
-		return
-	}
+	// Channel format: "orderbook:BTCUSDT", "trades:BTCUSDT"
+	channelType, symbol := parseChannel(raw.Channel)
 
-	switch channel {
+	switch channelType {
 	case "orderbook":
-		ws.handleOrderBookMessage(raw)
+		ws.handleOrderBookMessage(symbol, raw.Data)
 	case "trades":
-		ws.handleTradeMessage(raw)
-	case "funding":
-		ws.handleFundingMessage(raw)
+		ws.handleTradeMessage(symbol, raw.Data)
 	}
 }
 
-func (ws *wsClient) handleOrderBookMessage(raw map[string]json.RawMessage) {
-	// Parse and dispatch order book delta
-	ws.chanMu.RLock()
-	defer ws.chanMu.RUnlock()
+func parseChannel(ch string) (string, string) {
+	for i := 0; i < len(ch); i++ {
+		if ch[i] == ':' {
+			return ch[:i], ch[i+1:]
+		}
+	}
+	return ch, ""
+}
 
-	var symbolStr string
-	if s, ok := raw["symbol"]; ok {
-		_ = json.Unmarshal(s, &symbolStr)
+func (ws *wsClient) handleOrderBookMessage(symbol string, data json.RawMessage) {
+	ws.chanMu.RLock()
+	ch, ok := ws.orderBookChans[symbol]
+	ws.chanMu.RUnlock()
+	if !ok {
+		return
 	}
 
-	ch, ok := ws.orderBookChans[symbolStr]
-	if !ok {
+	var update struct {
+		Bids [][]string `json:"bids"`
+		Asks [][]string `json:"asks"`
+	}
+	if err := json.Unmarshal(data, &update); err != nil {
+		ws.logger.Warn("failed to parse nobitex orderbook update", "error", err)
 		return
 	}
 
 	delta := domain.OrderBookDelta{
-		Venue:         "nobitex",
-		Symbol:        symbolStr,
-		LocalTimestamp: time.Now(),
+		Venue:          "nobitex",
+		Symbol:         symbol,
+		LocalTimestamp:  time.Now(),
+	}
+
+	for _, bid := range update.Bids {
+		if len(bid) >= 2 {
+			price, _ := decimal.NewFromString(bid[0])
+			size, _ := decimal.NewFromString(bid[1])
+			delta.Bids = append(delta.Bids, domain.PriceLevel{Price: price, Size: size})
+		}
+	}
+	for _, ask := range update.Asks {
+		if len(ask) >= 2 {
+			price, _ := decimal.NewFromString(ask[0])
+			size, _ := decimal.NewFromString(ask[1])
+			delta.Asks = append(delta.Asks, domain.PriceLevel{Price: price, Size: size})
+		}
 	}
 
 	select {
 	case ch <- delta:
 	default:
+		ws.logger.Debug("nobitex orderbook channel full, dropping update", "symbol", symbol)
 	}
 }
 
-func (ws *wsClient) handleTradeMessage(raw map[string]json.RawMessage) {
+func (ws *wsClient) handleTradeMessage(symbol string, data json.RawMessage) {
 	ws.chanMu.RLock()
-	defer ws.chanMu.RUnlock()
-
-	var symbolStr string
-	if s, ok := raw["symbol"]; ok {
-		_ = json.Unmarshal(s, &symbolStr)
-	}
-
-	ch, ok := ws.tradeChans[symbolStr]
+	ch, ok := ws.tradeChans[symbol]
+	ws.chanMu.RUnlock()
 	if !ok {
 		return
 	}
 
+	var update struct {
+		Price  string `json:"price"`
+		Volume string `json:"volume"`
+		Type   string `json:"type"`
+		Time   int64  `json:"time"`
+	}
+	if err := json.Unmarshal(data, &update); err != nil {
+		ws.logger.Warn("failed to parse nobitex trade update", "error", err)
+		return
+	}
+
+	side := domain.SideBuy
+	if update.Type == "sell" {
+		side = domain.SideSell
+	}
+
 	trade := domain.Trade{
 		Venue:     "nobitex",
-		Symbol:    symbolStr,
-		Timestamp: time.Now(),
+		Symbol:    symbol,
+		Side:      side,
+		Timestamp: time.UnixMilli(update.Time),
+	}
+	trade.Price, _ = decimal.NewFromString(update.Price)
+	trade.Size, _ = decimal.NewFromString(update.Volume)
+
+	if trade.Timestamp.IsZero() {
+		trade.Timestamp = time.Now()
 	}
 
 	select {
 	case ch <- trade:
 	default:
-	}
-}
-
-func (ws *wsClient) handleFundingMessage(raw map[string]json.RawMessage) {
-	ws.chanMu.RLock()
-	defer ws.chanMu.RUnlock()
-
-	var symbolStr string
-	if s, ok := raw["symbol"]; ok {
-		_ = json.Unmarshal(s, &symbolStr)
-	}
-
-	ch, ok := ws.fundingChans[symbolStr]
-	if !ok {
-		return
-	}
-
-	rate := domain.FundingRate{
-		Venue:     "nobitex",
-		Symbol:    symbolStr,
-		Timestamp: time.Now(),
-	}
-
-	select {
-	case ch <- rate:
-	default:
+		ws.logger.Debug("nobitex trade channel full, dropping update", "symbol", symbol)
 	}
 }
 
@@ -261,7 +299,8 @@ func (ws *wsClient) subscribeFunding(symbol string) <-chan domain.FundingRate {
 	ws.chanMu.Lock()
 	defer ws.chanMu.Unlock()
 
-	ch := make(chan domain.FundingRate, 256)
+	// Nobitex is spot-only; funding rate channel will never receive data
+	ch := make(chan domain.FundingRate, 8)
 	ws.fundingChans[symbol] = ch
 	return ch
 }

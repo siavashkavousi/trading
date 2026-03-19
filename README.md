@@ -55,22 +55,22 @@ All runtime behavior is controlled through a single YAML file. The default confi
 
 ### Environment Variables
 
-API keys are **never** stored in config files. They are injected via environment variables:
+API credentials are **never** stored in config files. They are injected via environment variables:
 
 ```bash
-# Nobitex
-export NOBITEX_API_KEY="your-api-key"
-export NOBITEX_API_SECRET="your-api-secret"
+# Nobitex (token-based auth — obtain from account panel or /auth/login/)
+export NOBITEX_API_TOKEN="your-auth-token"
 
-# KCEX
+# KCEX (KuCoin-style key + secret + passphrase auth)
 export KCEX_API_KEY="your-api-key"
 export KCEX_API_SECRET="your-api-secret"
+export KCEX_API_PASSPHRASE="your-passphrase"
 
 # PostgreSQL (only if using cold store)
 export POSTGRES_PASSWORD="your-db-password"
 ```
 
-In dry-run mode, trading API keys are not required — only market data feeds need access.
+In dry-run mode, trading API credentials are not required — only market data feeds need access.
 
 ## Running Natively
 
@@ -171,14 +171,14 @@ docker run -p 9090:9090 \
   crypto-trader:latest
 ```
 
-Run in live mode with API keys:
+Run in live mode with API credentials:
 
 ```bash
 docker run -p 9090:9090 \
-  -e NOBITEX_API_KEY="your-key" \
-  -e NOBITEX_API_SECRET="your-secret" \
+  -e NOBITEX_API_TOKEN="your-token" \
   -e KCEX_API_KEY="your-key" \
   -e KCEX_API_SECRET="your-secret" \
+  -e KCEX_API_PASSPHRASE="your-passphrase" \
   -v $(pwd)/configs:/configs:ro \
   -v $(pwd)/data:/data \
   crypto-trader:latest --config /configs/config.yaml --confirm-live
@@ -206,10 +206,10 @@ To pass API keys, create a `.env` file in the `scripts/` directory:
 
 ```bash
 # scripts/.env
-NOBITEX_API_KEY=your-key
-NOBITEX_API_SECRET=your-secret
+NOBITEX_API_TOKEN=your-token
 KCEX_API_KEY=your-key
 KCEX_API_SECRET=your-secret
+KCEX_API_PASSPHRASE=your-passphrase
 POSTGRES_PASSWORD=your-secure-password
 GRAFANA_PASSWORD=your-grafana-password
 ```

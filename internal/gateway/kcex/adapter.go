@@ -8,6 +8,10 @@ import (
 	"github.com/crypto-trading/trading/internal/gateway"
 )
 
+// Gateway implements the VenueGateway interface for the KCEX exchange.
+// KCEX uses KuCoin-style API authentication with HMAC-SHA256 (Base64-encoded),
+// API key, secret, and passphrase headers.
+// Supports both spot (BTC-USDT format) and futures (BTCUSDTM format).
 type Gateway struct {
 	ws     *wsClient
 	rest   *restClient
@@ -15,7 +19,10 @@ type Gateway struct {
 	logger *slog.Logger
 }
 
-func New(wsURL, restURL, apiKey, apiSecret string, logger *slog.Logger) *Gateway {
+// New creates a new KCEX gateway.
+// apiKey, apiSecret, and passphrase are the KCEX API credentials.
+// wsURL is the fallback WebSocket URL if the bullet endpoint fails.
+func New(wsURL, restURL, apiKey, apiSecret, passphrase string, logger *slog.Logger) *Gateway {
 	rl := gateway.NewRateLimiter()
 	rl.AddBucket(domain.EndpointPublicData, 40, 20)
 	rl.AddBucket(domain.EndpointPrivateData, 20, 10)
@@ -23,9 +30,11 @@ func New(wsURL, restURL, apiKey, apiSecret string, logger *slog.Logger) *Gateway
 	rl.AddBucket(domain.EndpointOrderCancel, 25, 12)
 	rl.AddBucket(domain.EndpointAccount, 10, 5)
 
+	rest := newRESTClient(restURL, apiKey, apiSecret, passphrase, rl, logger)
+
 	return &Gateway{
-		ws:     newWSClient(wsURL, logger),
-		rest:   newRESTClient(restURL, apiKey, apiSecret, rl, logger),
+		ws:     newWSClient(wsURL, rest, logger),
+		rest:   rest,
 		rl:     rl,
 		logger: logger,
 	}
@@ -42,9 +51,10 @@ func (g *Gateway) Close() error {
 }
 
 func (g *Gateway) SubscribeOrderBook(ctx context.Context, symbol string) (<-chan domain.OrderBookDelta, error) {
-	venueSymbol := domain.MapSymbol(symbol, domain.KCEXSymbolMap)
+	venueSymbol := domain.MapKCEXSymbol(symbol)
 	ch := g.ws.subscribeOrderBook(venueSymbol)
-	if err := g.ws.subscribe(venueSymbol, "orderbook"); err != nil {
+	topic := "/market/level2:" + venueSymbol
+	if err := g.ws.subscribe(topic, false); err != nil {
 		return nil, err
 	}
 	go g.ws.readPump(ctx)
@@ -52,18 +62,20 @@ func (g *Gateway) SubscribeOrderBook(ctx context.Context, symbol string) (<-chan
 }
 
 func (g *Gateway) SubscribeTrades(ctx context.Context, symbol string) (<-chan domain.Trade, error) {
-	venueSymbol := domain.MapSymbol(symbol, domain.KCEXSymbolMap)
+	venueSymbol := domain.MapKCEXSymbol(symbol)
 	ch := g.ws.subscribeTrades(venueSymbol)
-	if err := g.ws.subscribe(venueSymbol, "trades"); err != nil {
+	topic := "/market/match:" + venueSymbol
+	if err := g.ws.subscribe(topic, false); err != nil {
 		return nil, err
 	}
 	return ch, nil
 }
 
 func (g *Gateway) SubscribeFunding(ctx context.Context, symbol string) (<-chan domain.FundingRate, error) {
-	venueSymbol := domain.MapSymbol(symbol, domain.KCEXSymbolMap)
+	venueSymbol := domain.MapKCEXSymbol(symbol)
 	ch := g.ws.subscribeFunding(venueSymbol)
-	if err := g.ws.subscribe(venueSymbol, "funding"); err != nil {
+	topic := "/contract/instrument:" + venueSymbol
+	if err := g.ws.subscribe(topic, false); err != nil {
 		return nil, err
 	}
 	return ch, nil
