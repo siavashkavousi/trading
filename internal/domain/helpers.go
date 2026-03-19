@@ -13,6 +13,20 @@ func ParseDecimal(s string) (decimal.Decimal, error) {
 	return decimal.NewFromString(s)
 }
 
+// ExtractAsset returns the base asset from a trading symbol.
+// For "BTC/USDT" it returns "BTC"; for "BTCUSDT" it returns "BTC".
+func ExtractAsset(symbol string) string {
+	if idx := strings.IndexByte(symbol, '/'); idx >= 0 {
+		return symbol[:idx]
+	}
+	for _, a := range []string{"BTC", "ETH", "SOL"} {
+		if strings.HasPrefix(symbol, a) {
+			return a
+		}
+	}
+	return symbol
+}
+
 // NobitexOrderBookSymbolMap maps internal symbols to Nobitex orderbook symbols.
 // Nobitex orderbook endpoint uses concatenated uppercase symbols.
 var NobitexOrderBookSymbolMap = map[string]string{

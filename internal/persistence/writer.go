@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"log/slog"
+	"sync"
 )
 
 type WriteType int
@@ -22,11 +23,11 @@ type WriteRequest struct {
 
 type AsyncWriter struct {
 	writeCh       chan WriteRequest
-	riskCh        chan WriteRequest // never-dropped channel for risk checkpoints
+	riskCh        chan WriteRequest
 	sqliteStore   *SQLiteStore
 	postgresStore *PostgresStore
 	logger        *slog.Logger
-	done          chan struct{}
+	wg            sync.WaitGroup
 }
 
 func NewAsyncWriter(
@@ -41,7 +42,6 @@ func NewAsyncWriter(
 		sqliteStore:   sqliteStore,
 		postgresStore: postgresStore,
 		logger:        logger,
-		done:          make(chan struct{}),
 	}
 }
 
@@ -60,17 +60,20 @@ func (w *AsyncWriter) Write(req WriteRequest) {
 }
 
 func (w *AsyncWriter) Run() {
+	w.wg.Add(2)
 	go w.processWrites()
 	go w.processRiskCheckpoints()
 }
 
 func (w *AsyncWriter) processWrites() {
+	defer w.wg.Done()
 	for req := range w.writeCh {
 		w.handleWrite(req)
 	}
 }
 
 func (w *AsyncWriter) processRiskCheckpoints() {
+	defer w.wg.Done()
 	for req := range w.riskCh {
 		w.handleWrite(req)
 	}
@@ -107,8 +110,9 @@ func (w *AsyncWriter) handleWrite(req WriteRequest) {
 	}
 }
 
+// Stop closes the write channels and waits for all pending writes to drain.
 func (w *AsyncWriter) Stop() {
 	close(w.writeCh)
 	close(w.riskCh)
-	close(w.done)
+	w.wg.Wait()
 }

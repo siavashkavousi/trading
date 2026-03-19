@@ -335,16 +335,5 @@ func (m *Manager) GetCheckpointState() *domain.RiskState {
 }
 
 func extractAsset(symbol string) string {
-	for i := 0; i < len(symbol); i++ {
-		if symbol[i] == '/' {
-			return symbol[:i]
-		}
-	}
-	assets := []string{"BTC", "ETH", "SOL"}
-	for _, a := range assets {
-		if len(symbol) >= len(a) && symbol[:len(a)] == a {
-			return a
-		}
-	}
-	return symbol
+	return domain.ExtractAsset(symbol)
 }

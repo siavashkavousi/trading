@@ -207,8 +207,13 @@ func (m *TriArbModule) buildSignal(path TriangularPath, edgeBps domain.FixedPric
 		return nil
 	}
 
+	signalID, err := uuid.NewV7()
+	if err != nil {
+		signalID = uuid.New()
+	}
+
 	return &domain.TradeSignal{
-		SignalID:            uuid.Must(uuid.NewV7()),
+		SignalID:            signalID,
 		Strategy:            domain.StrategyTriArb,
 		Venue:               m.venue,
 		Legs:                legs,
