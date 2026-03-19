@@ -26,6 +26,7 @@ import (
 	"github.com/crypto-trading/trading/internal/gateway/kcex"
 	"github.com/crypto-trading/trading/internal/gateway/nobitex"
 	"github.com/crypto-trading/trading/internal/gateway/simulated"
+	"github.com/crypto-trading/trading/internal/gateway/wallex"
 	"github.com/crypto-trading/trading/internal/marketdata"
 	"github.com/crypto-trading/trading/internal/monitor"
 	"github.com/crypto-trading/trading/internal/order"
@@ -331,6 +332,12 @@ func buildGateways(cfg *config.Config, mdService *marketdata.Service, mode domai
 			apiSecret := os.Getenv("KCEX_API_SECRET")
 			passphrase := os.Getenv("KCEX_API_PASSPHRASE")
 			gw = kcex.New(venueCfg.WsURL, venueCfg.RestURL, apiKey, apiSecret, passphrase, logger)
+
+		case "wallex":
+			// Wallex uses API key authentication via x-api-key header.
+			// API keys are created in the Wallex API Management panel with max 90-day validity.
+			apiKey := os.Getenv("WALLEX_API_KEY")
+			gw = wallex.New(venueCfg.WsURL, venueCfg.RestURL, apiKey, logger)
 
 		default:
 			logger.Warn("unknown venue, skipping", "venue", venueName)
