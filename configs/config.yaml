@@ -1,0 +1,135 @@
+system:
+  instance_id: "dev-01"
+  trading_mode: "dry_run"
+  require_live_confirmation: true
+  log_level: "INFO"
+  timezone: "UTC"
+
+venues:
+  nobitex:
+    enabled: true
+    ws_url: "wss://api.nobitex.ir/ws"
+    rest_url: "https://api.nobitex.ir"
+    rate_limits:
+      order_place:
+        capacity: 10
+        refill_per_second: 5
+      order_cancel:
+        capacity: 20
+        refill_per_second: 10
+      public_data:
+        capacity: 30
+        refill_per_second: 15
+    symbols:
+      spot:
+        - "BTC/USDT"
+        - "ETH/USDT"
+        - "SOL/USDT"
+      perp:
+        - "BTCUSDT"
+        - "ETHUSDT"
+        - "SOLUSDT"
+
+  kcex:
+    enabled: true
+    ws_url: "wss://api.kcex.com/ws"
+    rest_url: "https://api.kcex.com"
+    rate_limits:
+      order_place:
+        capacity: 15
+        refill_per_second: 7
+      order_cancel:
+        capacity: 25
+        refill_per_second: 12
+      public_data:
+        capacity: 40
+        refill_per_second: 20
+    symbols:
+      spot:
+        - "BTC/USDT"
+        - "ETH/USDT"
+        - "SOL/USDT"
+      perp:
+        - "BTCUSDT"
+        - "ETHUSDT"
+        - "SOLUSDT"
+
+strategies:
+  triangular_arb:
+    enabled: true
+    min_edge_bps: 18
+    fee_estimate_bps: 8
+    slippage_buffer_bps: 5
+    execution_risk_buffer_bps: 4
+    fill_timeout_ms: 3000
+    max_retries: 2
+
+  basis_arb:
+    enabled: true
+    min_net_edge_bps: 22
+    fee_estimate_bps: 10
+    slippage_buffer_bps: 6
+    funding_uncertainty_buffer_bps: 5
+    transfer_cost_amortization_bps: 3
+    fill_timeout_ms: 15000
+    holding_horizon_hours: 168
+
+risk:
+  max_position:
+    BTC: 1.5
+    ETH: 25
+    SOL: 800
+  max_notional_per_venue:
+    nobitex: 250000
+    kcex: 200000
+  daily_loss_cap_usdt: 12500
+  warning_threshold_pct: 80
+  max_open_orders:
+    global: 120
+    per_venue: 70
+    per_symbol: 20
+  data_freshness:
+    warning_ms: 500
+    block_ms: 2000
+  reconciliation:
+    interval_seconds: 60
+    mismatch_threshold_pct: 0.5
+  checkpoint_interval_seconds: 5
+
+cost_model:
+  slippage_curve_lookback_fills: 500
+  fee_tier_refresh_interval_seconds: 3600
+  funding_rate_lookback_intervals: 12
+
+monitoring:
+  metrics:
+    flush_interval_seconds: 10
+    ingestion_delay_sla_seconds: 15
+  alerting:
+    delivery_delay_sla_seconds: 30
+    p1_ack_sla_minutes: 5
+    p1_mitigation_sla_minutes: 15
+    channels:
+      - "telegram"
+      - "pagerduty"
+  logging:
+    availability_sla_pct: 99.9
+    availability_window_minutes: 1
+
+dry_run:
+  initial_capital_usdt: 100000
+  simulated_latency_ms: 50
+  reject_rate_pct: 0.0
+  use_live_slippage_model: true
+  persist_to_separate_table: true
+
+persistence:
+  checkpoint_db: "./data/checkpoints.db"
+  cold_store_dsn: ""
+  cold_store_pool_size: 10
+  trade_log_retention_days: 30
+
+runtime:
+  gomaxprocs: 0
+  gogc: 400
+  gomemlimit: "2GiB"

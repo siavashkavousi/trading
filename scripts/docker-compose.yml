@@ -1,0 +1,60 @@
+version: "3.8"
+
+services:
+  trader:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "9090:9090"
+    environment:
+      - NOBITEX_API_KEY=${NOBITEX_API_KEY:-}
+      - NOBITEX_API_SECRET=${NOBITEX_API_SECRET:-}
+      - KCEX_API_KEY=${KCEX_API_KEY:-}
+      - KCEX_API_SECRET=${KCEX_API_SECRET:-}
+    volumes:
+      - trader-data:/data
+      - ../configs:/configs:ro
+    depends_on:
+      - postgres
+      - prometheus
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: trading
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  trader-data:
+  pg-data:
+  prom-data:
+  grafana-data:
