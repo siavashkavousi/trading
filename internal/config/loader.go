@@ -3,10 +3,13 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sync/atomic"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/go-playground/validator/v10"
+	"github.com/go-viper/mapstructure/v2"
+	"github.com/shopspring/decimal"
 	"github.com/spf13/viper"
 )
 
@@ -41,7 +44,12 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := v.Unmarshal(&cfg); err != nil {
+	if err := v.Unmarshal(&cfg, viper.DecodeHook(
+		mapstructure.ComposeDecodeHookFunc(
+			mapstructure.TextUnmarshallerHookFunc(),
+			decimalDecodeHook(),
+		),
+	)); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
 
@@ -52,6 +60,27 @@ func Load(configPath string) (*Config, error) {
 
 	globalConfig.Store(&cfg)
 	return &cfg, nil
+}
+
+// decimalDecodeHook converts numeric types to decimal.Decimal during config unmarshaling.
+func decimalDecodeHook() mapstructure.DecodeHookFuncType {
+	return func(from reflect.Type, to reflect.Type, data interface{}) (interface{}, error) {
+		if to != reflect.TypeOf(decimal.Decimal{}) {
+			return data, nil
+		}
+		switch v := data.(type) {
+		case int:
+			return decimal.NewFromInt(int64(v)), nil
+		case int64:
+			return decimal.NewFromInt(v), nil
+		case float64:
+			return decimal.NewFromFloat(v), nil
+		case string:
+			return decimal.NewFromString(v)
+		default:
+			return data, nil
+		}
+	}
 }
 
 func WatchAndReload(configPath string, onChange func(*Config)) error {
@@ -67,7 +96,12 @@ func WatchAndReload(configPath string, onChange func(*Config)) error {
 	v.WatchConfig()
 	v.OnConfigChange(func(_ fsnotify.Event) {
 		var newCfg Config
-		if err := v.Unmarshal(&newCfg); err != nil {
+		if err := v.Unmarshal(&newCfg, viper.DecodeHook(
+			mapstructure.ComposeDecodeHookFunc(
+				mapstructure.TextUnmarshallerHookFunc(),
+				decimalDecodeHook(),
+			),
+		)); err != nil {
 			slog.Error("failed to unmarshal reloaded config", "error", err)
 			return
 		}
