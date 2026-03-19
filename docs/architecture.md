@@ -414,14 +414,16 @@ type VenueGateway interface {
 
 #### 5.8.1 Nobitex Gateway
 
-- **Market data**: WebSocket for order book and trades; REST fallback for funding data.
-- **Trading**: REST API with HMAC-SHA256 authentication.
+- **Market data**: WebSocket for order book and trades. Nobitex is a **spot-only** exchange — no perpetual contracts, funding rates, or positions.
+- **Trading**: REST API with **Token-based authentication** (`Authorization: Token xxx`). Tokens are obtained from the account panel or via the `/auth/login/` endpoint.
+- **API endpoints**: Orders via `POST /market/orders/add` (srcCurrency/dstCurrency pair format), cancellation via `POST /market/orders/update-status`, order book via `GET /v3/orderbook/{symbol}`, wallets via `POST /users/wallets/list`.
 - **Rate limits**: Enforced client-side with a token bucket; configurable per endpoint category.
 
 #### 5.8.2 KCEX Gateway
 
-- **Market data**: WebSocket for order book, trades, and funding rates.
-- **Trading**: REST API with API key + secret signature.
+- **Market data**: WebSocket (KuCoin-style token-based connection via `/api/v1/bullet-public`) for order book (`/market/level2`), trades (`/market/match`), and funding rates (`/contract/instrument`).
+- **Trading**: REST API with **KuCoin-style HMAC-SHA256 authentication** (Base64-encoded). Requires API key, secret, and passphrase. Headers: `KC-API-KEY`, `KC-API-SIGN`, `KC-API-TIMESTAMP`, `KC-API-PASSPHRASE`, `KC-API-KEY-VERSION`.
+- **Symbols**: Spot uses dash-separated format (`BTC-USDT`), futures uses `M` suffix (`BTCUSDTM`).
 - **Rate limits**: Enforced client-side; separate buckets for public and private endpoints.
 
 ---

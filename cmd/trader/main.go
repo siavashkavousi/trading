@@ -308,15 +308,21 @@ func buildGateways(cfg *config.Config, mdService *marketdata.Service, mode domai
 			continue
 		}
 
-		apiKey := os.Getenv(fmt.Sprintf("%s_API_KEY", venueName))
-		apiSecret := os.Getenv(fmt.Sprintf("%s_API_SECRET", venueName))
-
 		var gw gateway.VenueGateway
 		switch venueName {
 		case "nobitex":
-			gw = nobitex.New(venueCfg.WsURL, venueCfg.RestURL, apiKey, apiSecret, logger)
+			// Nobitex uses token-based authentication (Authorization: Token xxx).
+			// Token is obtained from the Nobitex account panel or via /auth/login/.
+			token := os.Getenv("NOBITEX_API_TOKEN")
+			gw = nobitex.New(venueCfg.WsURL, venueCfg.RestURL, token, logger)
+
 		case "kcex":
-			gw = kcex.New(venueCfg.WsURL, venueCfg.RestURL, apiKey, apiSecret, logger)
+			// KCEX uses KuCoin-style API key + secret + passphrase authentication.
+			apiKey := os.Getenv("KCEX_API_KEY")
+			apiSecret := os.Getenv("KCEX_API_SECRET")
+			passphrase := os.Getenv("KCEX_API_PASSPHRASE")
+			gw = kcex.New(venueCfg.WsURL, venueCfg.RestURL, apiKey, apiSecret, passphrase, logger)
+
 		default:
 			logger.Warn("unknown venue, skipping", "venue", venueName)
 			continue

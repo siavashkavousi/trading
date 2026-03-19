@@ -8,10 +8,10 @@ services:
     ports:
       - "9090:9090"
     environment:
-      - NOBITEX_API_KEY=${NOBITEX_API_KEY:-}
-      - NOBITEX_API_SECRET=${NOBITEX_API_SECRET:-}
+      - NOBITEX_API_TOKEN=${NOBITEX_API_TOKEN:-}
       - KCEX_API_KEY=${KCEX_API_KEY:-}
       - KCEX_API_SECRET=${KCEX_API_SECRET:-}
+      - KCEX_API_PASSPHRASE=${KCEX_API_PASSPHRASE:-}
     volumes:
       - trader-data:/data
       - ../configs:/configs:ro

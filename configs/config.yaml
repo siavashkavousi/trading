@@ -8,7 +8,7 @@ system:
 venues:
   nobitex:
     enabled: true
-    ws_url: "wss://api.nobitex.ir/ws"
+    ws_url: "wss://wss.nobitex.ir/connection/websocket"
     rest_url: "https://api.nobitex.ir"
     rate_limits:
       order_place:
@@ -24,15 +24,11 @@ venues:
       spot:
         - "BTC/USDT"
         - "ETH/USDT"
-        - "SOL/USDT"
-      perp:
-        - "BTCUSDT"
-        - "ETHUSDT"
-        - "SOLUSDT"
+        - "USDT/IRT"
 
   kcex:
     enabled: true
-    ws_url: "wss://api.kcex.com/ws"
+    ws_url: "wss://ws-api.kcex.com/endpoint"
     rest_url: "https://api.kcex.com"
     rate_limits:
       order_place:

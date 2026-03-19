@@ -8,15 +8,23 @@ import (
 	"github.com/crypto-trading/trading/internal/gateway"
 )
 
+// Gateway implements the VenueGateway interface for Nobitex exchange.
+// Nobitex is a spot-only Iranian cryptocurrency exchange.
+// Authentication uses Token-based auth (Authorization: Token xxx).
+// The API base URL is https://api.nobitex.ir.
 type Gateway struct {
-	ws   *wsClient
-	rest *restClient
-	rl   *gateway.RateLimiter
+	ws     *wsClient
+	rest   *restClient
+	rl     *gateway.RateLimiter
 	logger *slog.Logger
 }
 
-func New(wsURL, restURL, apiKey, apiSecret string, logger *slog.Logger) *Gateway {
+// New creates a new Nobitex gateway.
+// token is the Nobitex API authentication token obtained from the user's account panel
+// or via the /auth/login/ endpoint.
+func New(wsURL, restURL, token string, logger *slog.Logger) *Gateway {
 	rl := gateway.NewRateLimiter()
+	// Nobitex rate limits per their documentation
 	rl.AddBucket(domain.EndpointPublicData, 30, 15)
 	rl.AddBucket(domain.EndpointPrivateData, 20, 10)
 	rl.AddBucket(domain.EndpointOrderPlace, 10, 5)
@@ -25,7 +33,7 @@ func New(wsURL, restURL, apiKey, apiSecret string, logger *slog.Logger) *Gateway
 
 	return &Gateway{
 		ws:     newWSClient(wsURL, logger),
-		rest:   newRESTClient(restURL, apiKey, apiSecret, rl, logger),
+		rest:   newRESTClient(restURL, token, rl, logger),
 		rl:     rl,
 		logger: logger,
 	}
@@ -42,7 +50,7 @@ func (g *Gateway) Close() error {
 }
 
 func (g *Gateway) SubscribeOrderBook(ctx context.Context, symbol string) (<-chan domain.OrderBookDelta, error) {
-	venueSymbol := domain.MapSymbol(symbol, domain.NobitexSymbolMap)
+	venueSymbol := domain.MapSymbol(symbol, domain.NobitexOrderBookSymbolMap)
 	ch := g.ws.subscribeOrderBook(venueSymbol)
 	if err := g.ws.subscribe(venueSymbol, "orderbook"); err != nil {
 		return nil, err
@@ -52,7 +60,7 @@ func (g *Gateway) SubscribeOrderBook(ctx context.Context, symbol string) (<-chan
 }
 
 func (g *Gateway) SubscribeTrades(ctx context.Context, symbol string) (<-chan domain.Trade, error) {
-	venueSymbol := domain.MapSymbol(symbol, domain.NobitexSymbolMap)
+	venueSymbol := domain.MapSymbol(symbol, domain.NobitexOrderBookSymbolMap)
 	ch := g.ws.subscribeTrades(venueSymbol)
 	if err := g.ws.subscribe(venueSymbol, "trades"); err != nil {
 		return nil, err
@@ -60,12 +68,11 @@ func (g *Gateway) SubscribeTrades(ctx context.Context, symbol string) (<-chan do
 	return ch, nil
 }
 
+// SubscribeFunding returns a channel that will never receive data since
+// Nobitex is a spot-only exchange with no perpetual contracts or funding rates.
 func (g *Gateway) SubscribeFunding(ctx context.Context, symbol string) (<-chan domain.FundingRate, error) {
-	venueSymbol := domain.MapSymbol(symbol, domain.NobitexSymbolMap)
+	venueSymbol := domain.MapSymbol(symbol, domain.NobitexOrderBookSymbolMap)
 	ch := g.ws.subscribeFunding(venueSymbol)
-	if err := g.ws.subscribe(venueSymbol, "funding"); err != nil {
-		return nil, err
-	}
 	return ch, nil
 }
 
@@ -85,6 +92,7 @@ func (g *Gateway) GetBalances(ctx context.Context) (map[string]domain.Balance, e
 	return g.rest.getBalances(ctx)
 }
 
+// GetPositions always returns empty since Nobitex is spot-only.
 func (g *Gateway) GetPositions(ctx context.Context) ([]domain.Position, error) {
 	return g.rest.getPositions(ctx)
 }
