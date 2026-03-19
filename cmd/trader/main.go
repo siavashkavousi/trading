@@ -22,6 +22,7 @@ import (
 	"github.com/crypto-trading/trading/internal/eventbus"
 	"github.com/crypto-trading/trading/internal/execution"
 	"github.com/crypto-trading/trading/internal/gateway"
+	"github.com/crypto-trading/trading/internal/gateway/dryrun"
 	"github.com/crypto-trading/trading/internal/gateway/kcex"
 	"github.com/crypto-trading/trading/internal/gateway/nobitex"
 	"github.com/crypto-trading/trading/internal/gateway/simulated"
@@ -302,32 +303,6 @@ func configureRuntime(cfg config.RuntimeConfig, logger *slog.Logger) {
 func buildGateways(cfg *config.Config, mdService *marketdata.Service, mode domain.TradingMode, logger *slog.Logger) map[string]gateway.VenueGateway {
 	gateways := make(map[string]gateway.VenueGateway)
 
-	if mode == domain.TradingModeDryRun {
-		for venueName, venueCfg := range cfg.Venues {
-			if !venueCfg.Enabled {
-				continue
-			}
-
-			fillSim := simulated.NewFillSimulator(
-				cfg.DryRun.SimulatedLatencyMs,
-				cfg.DryRun.RejectRatePct,
-				decimal.NewFromFloat(2),
-				decimal.NewFromFloat(5),
-			)
-
-			gw := simulated.New(
-				venueName,
-				fillSim,
-				mdService,
-				cfg.DryRun.InitialCapitalUSDT,
-				cfg.DryRun.SimulatedLatencyMs,
-				logger,
-			)
-			gateways[venueName] = gw
-		}
-		return gateways
-	}
-
 	for venueName, venueCfg := range cfg.Venues {
 		if !venueCfg.Enabled {
 			continue
@@ -336,16 +311,29 @@ func buildGateways(cfg *config.Config, mdService *marketdata.Service, mode domai
 		apiKey := os.Getenv(fmt.Sprintf("%s_API_KEY", venueName))
 		apiSecret := os.Getenv(fmt.Sprintf("%s_API_SECRET", venueName))
 
+		var gw gateway.VenueGateway
 		switch venueName {
 		case "nobitex":
-			gw := nobitex.New(venueCfg.WsURL, venueCfg.RestURL, apiKey, apiSecret, logger)
-			gateways[venueName] = gw
+			gw = nobitex.New(venueCfg.WsURL, venueCfg.RestURL, apiKey, apiSecret, logger)
 		case "kcex":
-			gw := kcex.New(venueCfg.WsURL, venueCfg.RestURL, apiKey, apiSecret, logger)
-			gateways[venueName] = gw
+			gw = kcex.New(venueCfg.WsURL, venueCfg.RestURL, apiKey, apiSecret, logger)
 		default:
 			logger.Warn("unknown venue, skipping", "venue", venueName)
+			continue
 		}
+
+		if mode == domain.TradingModeDryRun {
+			fillSim := simulated.NewFillSimulator(
+				cfg.DryRun.SimulatedLatencyMs,
+				cfg.DryRun.RejectRatePct,
+				decimal.NewFromFloat(2),
+				decimal.NewFromFloat(5),
+			)
+			gw = dryrun.NewWrapper(gw, fillSim, mdService, logger)
+			logger.Info("venue wrapped in dry-run mode (real data, simulated orders)", "venue", venueName)
+		}
+
+		gateways[venueName] = gw
 	}
 
 	return gateways
