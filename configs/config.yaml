@@ -26,6 +26,28 @@ venues:
         - "ETH/USDT"
         - "USDT/IRT"
 
+  wallex:
+    enabled: true
+    ws_url: "wss://api.wallex.ir/socket.io/?EIO=4&transport=websocket"
+    rest_url: "https://api.wallex.ir"
+    rate_limits:
+      order_place:
+        capacity: 10
+        refill_per_second: 5
+      order_cancel:
+        capacity: 20
+        refill_per_second: 10
+      public_data:
+        capacity: 30
+        refill_per_second: 15
+    symbols:
+      spot:
+        - "BTC/USDT"
+        - "ETH/USDT"
+        - "USDT/TMN"
+        - "BTC/TMN"
+        - "ETH/TMN"
+
   kcex:
     enabled: true
     ws_url: "wss://ws-api.kcex.com/endpoint"
@@ -77,6 +99,7 @@ risk:
     SOL: 800
   max_notional_per_venue:
     nobitex: 250000
+    wallex: 250000
     kcex: 200000
   daily_loss_cap_usdt: 12500
   warning_threshold_pct: 80

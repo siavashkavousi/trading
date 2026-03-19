@@ -54,6 +54,24 @@ var KCEXFuturesSymbolMap = map[string]string{
 	"SOLUSDT": "SOLUSDTM",
 }
 
+// WallexSymbolMap maps internal symbols to Wallex API symbols.
+// Wallex uses concatenated uppercase symbols (e.g., BTCUSDT, BTCTMN).
+var WallexSymbolMap = map[string]string{
+	"BTC/USDT": "BTCUSDT",
+	"ETH/USDT": "ETHUSDT",
+	"SOL/USDT": "SOLUSDT",
+	"BTC/TMN":  "BTCTMN",
+	"ETH/TMN":  "ETHTMN",
+	"USDT/TMN": "USDTTMN",
+	"XRP/USDT": "XRPUSDT",
+	"XRP/TMN":  "XRPTMN",
+	"LTC/USDT": "LTCUSDT",
+	"LTC/TMN":  "LTCTMN",
+	"XLM/USDT": "XLMUSDT",
+	"TRX/USDT": "TRXUSDT",
+	"TRX/TMN":  "TRXTMN",
+}
+
 // MapSymbol maps an internal symbol to a venue-specific symbol using the provided map.
 func MapSymbol(internal string, mapping map[string]string) string {
 	if v, ok := mapping[internal]; ok {
@@ -78,6 +96,16 @@ func MapNobitexCurrencyPair(internal string) (src, dst string) {
 func IsKCEXFutures(internal string) bool {
 	_, ok := KCEXFuturesSymbolMap[internal]
 	return ok
+}
+
+// ReverseMapSymbol maps a venue-specific symbol back to an internal symbol.
+func ReverseMapSymbol(venueSymbol string, mapping map[string]string) string {
+	for internal, venue := range mapping {
+		if venue == venueSymbol {
+			return internal
+		}
+	}
+	return venueSymbol
 }
 
 // MapKCEXSymbol maps an internal symbol to the correct KCEX symbol,
