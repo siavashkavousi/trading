@@ -16,6 +16,7 @@ type Config struct {
 	DryRun      DryRunConfig                `mapstructure:"dry_run"`
 	Persistence PersistenceConfig           `mapstructure:"persistence" validate:"required"`
 	Runtime     RuntimeConfig               `mapstructure:"runtime"`
+	Dashboard   DashboardConfig             `mapstructure:"dashboard"`
 }
 
 type SystemConfig struct {
@@ -173,4 +174,16 @@ type RuntimeConfig struct {
 	GoMaxProcs int    `mapstructure:"gomaxprocs"`
 	GOGC       int    `mapstructure:"gogc"`
 	GoMemLimit string `mapstructure:"gomemlimit"`
+}
+
+type DashboardConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Addr    string `mapstructure:"addr"`
+}
+
+func (c DashboardConfig) Address() string {
+	if c.Addr != "" {
+		return c.Addr
+	}
+	return ":8080"
 }

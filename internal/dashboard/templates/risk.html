@@ -1,0 +1,220 @@
+{{define "content"}}
+<div id="risk-content"
+     hx-get="/fragments/risk"
+     hx-trigger="every 2s"
+     hx-swap="innerHTML">
+    {{template "risk-data" .}}
+</div>
+{{end}}
+
+{{define "risk-data"}}
+<div class="space-y-6">
+    <h2 class="text-xl font-semibold text-white">Risk Management</h2>
+
+    <!-- Top Row: Risk Mode + PnL + Kill Switch -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <!-- Risk Mode -->
+        <div class="bg-slate-900 rounded-xl border border-slate-800 p-5">
+            <h3 class="text-sm font-medium text-slate-400 mb-3">Risk Mode</h3>
+            <div class="text-center">
+                <span class="inline-flex items-center rounded-lg px-4 py-2 text-lg font-semibold ring-1 ring-inset {{riskModeColor .Risk.Mode}}">
+                    {{.Risk.Mode}}
+                </span>
+            </div>
+        </div>
+
+        <!-- PnL vs Cap -->
+        <div class="bg-slate-900 rounded-xl border border-slate-800 p-5">
+            <h3 class="text-sm font-medium text-slate-400 mb-3">Daily PnL vs Loss Cap</h3>
+            <div class="space-y-2">
+                <div class="flex justify-between text-sm">
+                    <span class="text-slate-500">Current PnL</span>
+                    <span class="font-mono {{if .PnL.IsNegative}}text-rose-400{{else}}text-emerald-400{{end}}">{{.PnL.Total}} USDT</span>
+                </div>
+                <div class="flex justify-between text-sm">
+                    <span class="text-slate-500">Loss Cap</span>
+                    <span class="font-mono text-slate-300">-{{.PnL.LossCap}} USDT</span>
+                </div>
+                <div class="mt-2">
+                    <div class="w-full bg-slate-800 rounded-full h-3">
+                        <div class="h-3 rounded-full transition-all duration-500
+                            {{if gt .PnL.UtilPct 80.0}}bg-rose-500
+                            {{else if gt .PnL.UtilPct 50.0}}bg-amber-500
+                            {{else}}bg-emerald-500{{end}}"
+                            style="width: {{pctWidth .PnL.UtilPct}}">
+                        </div>
+                    </div>
+                    <p class="text-xs text-slate-500 mt-1 text-center">{{printf "%.1f" .PnL.UtilPct}}% of loss cap utilized</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Kill Switch -->
+        <div class="bg-slate-900 rounded-xl border border-slate-800 p-5">
+            <h3 class="text-sm font-medium text-slate-400 mb-3">Kill Switch</h3>
+            <div class="text-center mb-4">
+                {{if .Risk.KillSwitchActive}}
+                    <div class="inline-flex items-center gap-2">
+                        <span class="relative flex h-3 w-3">
+                            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-3 w-3 bg-rose-500"></span>
+                        </span>
+                        <span class="text-lg font-semibold text-rose-400">ACTIVE</span>
+                    </div>
+                    {{if .Risk.KillSwitchReason}}
+                        <p class="text-xs text-slate-500 mt-1">{{.Risk.KillSwitchReason}}</p>
+                    {{end}}
+                {{else}}
+                    <div class="inline-flex items-center gap-2">
+                        <span class="relative flex h-3 w-3">
+                            <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                        </span>
+                        <span class="text-lg font-semibold text-emerald-400">INACTIVE</span>
+                    </div>
+                {{end}}
+            </div>
+            <div class="flex gap-2">
+                {{if .Risk.KillSwitchActive}}
+                    <button hx-post="/api/killswitch/deactivate"
+                            hx-target="#risk-content"
+                            hx-swap="innerHTML"
+                            hx-confirm="Resume trading? This will deactivate the kill switch."
+                            class="flex-1 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500 transition-colors">
+                        Deactivate
+                    </button>
+                {{else}}
+                    <button hx-post="/api/killswitch/activate"
+                            hx-target="#risk-content"
+                            hx-swap="innerHTML"
+                            hx-confirm="Halt all trading, cancel orders, and flatten positions?"
+                            class="flex-1 rounded-lg bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-500 transition-colors">
+                        Activate Kill Switch
+                    </button>
+                {{end}}
+            </div>
+        </div>
+    </div>
+
+    <!-- Position Limits -->
+    <div class="bg-slate-900 rounded-xl border border-slate-800 p-5">
+        <h3 class="text-sm font-medium text-slate-400 mb-4">Position Limits</h3>
+        {{if .PositionLimits}}
+            <div class="space-y-3">
+                {{range .PositionLimits}}
+                    <div>
+                        <div class="flex justify-between text-sm mb-1">
+                            <span class="text-slate-300 font-medium">{{.Name}}</span>
+                            <span class="font-mono text-slate-400">{{.Current}} / {{.Max}}</span>
+                        </div>
+                        <div class="w-full bg-slate-800 rounded-full h-2">
+                            <div class="h-2 rounded-full transition-all duration-500
+                                {{if gt .Pct 80.0}}bg-rose-500
+                                {{else if gt .Pct 50.0}}bg-amber-500
+                                {{else}}bg-sky-500{{end}}"
+                                style="width: {{pctWidth .Pct}}">
+                            </div>
+                        </div>
+                    </div>
+                {{end}}
+            </div>
+        {{else}}
+            <p class="text-sm text-slate-600 text-center py-2">No position limits configured</p>
+        {{end}}
+    </div>
+
+    <!-- Notional Limits -->
+    <div class="bg-slate-900 rounded-xl border border-slate-800 p-5">
+        <h3 class="text-sm font-medium text-slate-400 mb-4">Venue Notional Limits</h3>
+        {{if .NotionalLimits}}
+            <div class="space-y-3">
+                {{range .NotionalLimits}}
+                    <div>
+                        <div class="flex justify-between text-sm mb-1">
+                            <span class="text-slate-300 font-medium">{{.Name}}</span>
+                            <span class="font-mono text-slate-400">{{.Current}} / {{.Max}} USDT</span>
+                        </div>
+                        <div class="w-full bg-slate-800 rounded-full h-2">
+                            <div class="h-2 rounded-full transition-all duration-500
+                                {{if gt .Pct 80.0}}bg-rose-500
+                                {{else if gt .Pct 50.0}}bg-amber-500
+                                {{else}}bg-sky-500{{end}}"
+                                style="width: {{pctWidth .Pct}}">
+                            </div>
+                        </div>
+                    </div>
+                {{end}}
+            </div>
+        {{else}}
+            <p class="text-sm text-slate-600 text-center py-2">No notional limits configured</p>
+        {{end}}
+    </div>
+
+    <!-- Order Limits -->
+    <div class="bg-slate-900 rounded-xl border border-slate-800 p-5">
+        <h3 class="text-sm font-medium text-slate-400 mb-4">Order Limits</h3>
+        <div class="space-y-4">
+            <!-- Global -->
+            <div>
+                <div class="flex justify-between text-sm mb-1">
+                    <span class="text-slate-300 font-medium">Global Orders</span>
+                    <span class="font-mono text-slate-400">{{.OrderLimits.Global.Current}} / {{.OrderLimits.Global.Max}}</span>
+                </div>
+                <div class="w-full bg-slate-800 rounded-full h-2">
+                    <div class="h-2 rounded-full transition-all duration-500
+                        {{if gt .OrderLimits.Global.Pct 80.0}}bg-rose-500
+                        {{else if gt .OrderLimits.Global.Pct 50.0}}bg-amber-500
+                        {{else}}bg-sky-500{{end}}"
+                        style="width: {{pctWidth .OrderLimits.Global.Pct}}">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Per Venue -->
+            {{if .OrderLimits.PerVenue}}
+                <div class="border-t border-slate-800 pt-3">
+                    <p class="text-xs text-slate-500 uppercase tracking-wider mb-2">Per Venue</p>
+                    {{range .OrderLimits.PerVenue}}
+                        <div class="mb-2">
+                            <div class="flex justify-between text-sm mb-1">
+                                <span class="text-slate-300">{{.Name}}</span>
+                                <span class="font-mono text-slate-400">{{.Current}} / {{.Max}}</span>
+                            </div>
+                            <div class="w-full bg-slate-800 rounded-full h-1.5">
+                                <div class="h-1.5 rounded-full transition-all duration-500
+                                    {{if gt .Pct 80.0}}bg-rose-500
+                                    {{else if gt .Pct 50.0}}bg-amber-500
+                                    {{else}}bg-sky-500{{end}}"
+                                    style="width: {{pctWidth .Pct}}">
+                                </div>
+                            </div>
+                        </div>
+                    {{end}}
+                </div>
+            {{end}}
+
+            <!-- Per Symbol -->
+            {{if .OrderLimits.PerSymbol}}
+                <div class="border-t border-slate-800 pt-3">
+                    <p class="text-xs text-slate-500 uppercase tracking-wider mb-2">Per Symbol</p>
+                    {{range .OrderLimits.PerSymbol}}
+                        <div class="mb-2">
+                            <div class="flex justify-between text-sm mb-1">
+                                <span class="text-slate-300">{{.Name}}</span>
+                                <span class="font-mono text-slate-400">{{.Current}} / {{.Max}}</span>
+                            </div>
+                            <div class="w-full bg-slate-800 rounded-full h-1.5">
+                                <div class="h-1.5 rounded-full transition-all duration-500
+                                    {{if gt .Pct 80.0}}bg-rose-500
+                                    {{else if gt .Pct 50.0}}bg-amber-500
+                                    {{else}}bg-sky-500{{end}}"
+                                    style="width: {{pctWidth .Pct}}">
+                                </div>
+                            </div>
+                        </div>
+                    {{end}}
+                </div>
+            {{end}}
+        </div>
+    </div>
+</div>
+{{end}}

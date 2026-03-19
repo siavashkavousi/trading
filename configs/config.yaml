@@ -148,6 +148,10 @@ persistence:
   cold_store_pool_size: 10
   trade_log_retention_days: 30
 
+dashboard:
+  enabled: true
+  addr: ":8080"
+
 runtime:
   gomaxprocs: 0
   gogc: 400

@@ -152,6 +152,23 @@ A health check endpoint is also exposed:
 http://localhost:9090/health
 ```
 
+### 8. Web Dashboard
+
+When enabled in config (`dashboard.enabled: true`), a real-time web dashboard is served at:
+
+```
+http://localhost:8080
+```
+
+The dashboard provides:
+
+- **Overview** — system status, daily PnL, risk mode, venue health, kill switch control
+- **Positions** — live perpetual positions and spot balances
+- **Orders** — active orders with real-time status
+- **Risk** — position/notional/order limit utilization, kill switch management
+
+The dashboard uses HTMX for auto-refreshing data every 2 seconds with no page reloads. All templates are embedded in the binary via `//go:embed`, so no external files are needed at runtime.
+
 ## Running with Docker
 
 ### Option A: Standalone container
@@ -197,7 +214,7 @@ This starts four services:
 
 | Service | Port | Description |
 |---------|------|-------------|
-| **trader** | `9090` | The trading system (metrics at `/metrics`, health at `/health`) |
+| **trader** | `9090`, `8080` | The trading system (metrics at `:9090/metrics`, dashboard at `:8080`) |
 | **postgres** | `5432` | PostgreSQL 16 for trade history cold storage |
 | **prometheus** | `9091` | Prometheus scraping the trader's `/metrics` endpoint every 10s |
 | **grafana** | `3000` | Dashboards (default login: `admin` / `admin`) |
