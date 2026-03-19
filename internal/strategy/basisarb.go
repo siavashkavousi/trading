@@ -162,8 +162,13 @@ func (m *BasisArbModule) evaluate(venue string, mdTimestamp time.Time) {
 				continue
 			}
 
+			signalID, uuidErr := uuid.NewV7()
+			if uuidErr != nil {
+				signalID = uuid.New()
+			}
+
 			signal := domain.TradeSignal{
-				SignalID:  uuid.Must(uuid.NewV7()),
+				SignalID:  signalID,
 				Strategy:  domain.StrategyBasisArb,
 				Venue:     venue,
 				Legs: []domain.LegSpec{

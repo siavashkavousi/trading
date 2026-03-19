@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/crypto-trading/trading/internal/domain"
@@ -203,7 +204,7 @@ func (c *restClient) placeOrder(ctx context.Context, req domain.OrderRequest) (*
 
 	var path string
 	if isFutures {
-		path = "/api/v1/orders"
+		path = "/api/v1/futures/orders"
 	} else {
 		path = "/api/v1/orders"
 	}
@@ -347,7 +348,7 @@ func (c *restClient) getFeeTier(ctx context.Context) (*domain.FeeTier, error) {
 
 func (c *restClient) getOpenOrders(ctx context.Context, symbol string) ([]domain.Order, error) {
 	venueSymbol := domain.MapKCEXSymbol(symbol)
-	path := fmt.Sprintf("/api/v1/orders?status=active&symbol=%s", venueSymbol)
+	path := fmt.Sprintf("/api/v1/orders?status=active&symbol=%s", url.QueryEscape(venueSymbol))
 	data, err := c.doRequest(ctx, "GET", path, nil, domain.EndpointPrivateData)
 	if err != nil {
 		return nil, err

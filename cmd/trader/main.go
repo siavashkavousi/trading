@@ -216,7 +216,12 @@ func main() {
 
 	go runCheckpointer(ctx, riskMgr, asyncWriter, cfg.Risk.CheckpointInterval(), logger)
 
-	go startMetricsServer(logger)
+	metricsServer := newMetricsServer(logger)
+	go func() {
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("metrics server error", "error", err)
+		}
+	}()
 
 	if err := config.WatchAndReload(*configPath, func(newCfg *config.Config) {
 		logger.Info("configuration reloaded")
@@ -248,6 +253,10 @@ func main() {
 		if err := gw.Close(); err != nil {
 			logger.Error("failed to close venue gateway", "venue", name, "error", err)
 		}
+	}
+
+	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("failed to shut down metrics server", "error", err)
 	}
 
 	bus.Close()
@@ -364,7 +373,7 @@ func runCheckpointer(ctx context.Context, riskMgr *risk.Manager, writer *persist
 	}
 }
 
-func startMetricsServer(logger *slog.Logger) {
+func newMetricsServer(logger *slog.Logger) *http.Server {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", monitor.MetricsHandler())
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -372,13 +381,10 @@ func startMetricsServer(logger *slog.Logger) {
 		w.Write([]byte("ok"))
 	})
 
-	server := &http.Server{
-		Addr:    ":9090",
-		Handler: mux,
-	}
-
 	logger.Info("metrics server starting", "addr", ":9090")
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		logger.Error("metrics server error", "error", err)
+	return &http.Server{
+		Addr:              ":9090",
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 }
